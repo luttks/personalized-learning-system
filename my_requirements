@@ -1,0 +1,564 @@
+Dựa trên hệ thống hiện tại, bạn **không cần xây lại chức năng roadmap từ đầu**. NoteMind đã có `LearnerProfile`, `AssessmentAgent`, `SyllabusArchitectAgent`, `SchedulerAgent` và pipeline tạo lộ trình. Vấn đề chính là bổ sung một lớp trung gian để chuyển **đầu vào tự nhiên của học sinh** thành **hồ sơ học tập có cấu trúc, có độ tin cậy và được cập nhật theo thời gian**.
+
+## Kiến trúc nên bổ sung
+
+Luồng hiện tại có thể được nâng cấp thành:
+
+```text
+Đầu vào học sinh
+      ↓
+Learner Understanding Agent
+      ↓
+Hồ sơ học sinh có cấu trúc
+      ↓
+Diagnostic Assessment
+      ↓
+Knowledge/Mastery Model
+      ↓
+Roadmap Generator hiện có
+      ↓
+Theo dõi kết quả học tập
+      ↓
+Cập nhật hồ sơ và tái lập kế hoạch
+```
+
+## 1. Tạo `LearnerUnderstandingAgent`
+
+Agent này nhận đầu vào như:
+
+> Em đang học lớp 10, toán hơi yếu phần lượng giác. Em muốn thi được 8 điểm trong 2 tháng, mỗi ngày học khoảng một tiếng. Em thích xem ví dụ trước rồi mới làm bài.
+
+Sau đó chuyển thành JSON chuẩn:
+
+```json
+{
+  "education_level": "grade_10",
+  "subject": "mathematics",
+  "goal": {
+    "type": "exam_score",
+    "target": 8,
+    "deadline": "2026-09-28"
+  },
+  "current_level": "beginner",
+  "known_topics": [],
+  "weak_topics": ["trigonometry"],
+  "available_time": {
+    "minutes_per_day": 60,
+    "days_per_week": 6
+  },
+  "learning_preferences": {
+    "preferred_sequence": [
+      "worked_example",
+      "guided_practice",
+      "independent_practice"
+    ],
+    "content_formats": ["video", "example", "quiz"]
+  },
+  "constraints": [],
+  "confidence": {
+    "current_level": 0.55,
+    "weak_topics": 0.9,
+    "available_time": 0.95
+  },
+  "missing_fields": [
+    "diagnostic_score"
+  ]
+}
+```
+
+Nên tạo thư mục:
+
+```text
+backend/agents/learner/
+├── understanding_agent.py
+├── profile_merger.py
+├── clarification_agent.py
+├── diagnostic_agent.py
+└── mastery_tracker.py
+```
+
+Agent không chỉ trích xuất thông tin mà còn phải:
+
+* Nhận diện thông tin thiếu hoặc mâu thuẫn.
+* Phân biệt dữ liệu học sinh nói trực tiếp với dữ liệu hệ thống suy luận.
+* Gắn `confidence score` cho từng kết luận.
+* Không tự bịa trình độ khi chưa có đủ bằng chứng.
+* Tạo câu hỏi bổ sung khi thiếu thông tin quan trọng.
+
+Ví dụ:
+
+```python
+class LearnerUnderstandingAgent:
+    async def analyze(
+        self,
+        message: str,
+        existing_profile: dict | None = None,
+        conversation_context: str | None = None
+    ) -> dict:
+        """
+        Extract facts, inferred attributes, confidence scores,
+        missing fields and possible contradictions.
+        """
+```
+
+## 2. Mở rộng `LearnerProfile`
+
+Hồ sơ hiện tại mới tập trung vào mục tiêu, trình độ, giờ học, phong cách học và ngày bắt đầu.
+
+Bạn nên chia thành sáu nhóm:
+
+```python
+class LearnerProfile(BaseModel):
+    learner_id: str
+
+    # Thông tin mục tiêu
+    subject: str
+    learning_goal: LearningGoal
+    deadline: date | None
+
+    # Năng lực hiện tại
+    current_level: str | None
+    known_concepts: list[str]
+    weak_concepts: list[str]
+    misconceptions: list[str]
+
+    # Nguồn lực
+    minutes_per_day: int
+    days_per_week: int
+    available_periods: list[str]
+
+    # Cách học
+    preferred_formats: list[str]
+    preferred_difficulty: str | None
+    preferred_activity_sequence: list[str]
+
+    # Dữ liệu đánh giá
+    diagnostic_results: list[DiagnosticResult]
+    topic_mastery: dict[str, float]
+
+    # Metadata
+    profile_version: int
+    confidence_scores: dict[str, float]
+    missing_fields: list[str]
+    updated_at: datetime
+```
+
+Không nên chỉ lưu profile trong metadata của session. Hãy tạo bảng SQLite riêng:
+
+```sql
+CREATE TABLE learner_profiles (
+    learner_id TEXT PRIMARY KEY,
+    profile_json TEXT NOT NULL,
+    profile_version INTEGER NOT NULL,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE learner_evidence (
+    id TEXT PRIMARY KEY,
+    learner_id TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    topic_id TEXT,
+    value_json TEXT NOT NULL,
+    confidence REAL,
+    created_at DATETIME NOT NULL
+);
+
+CREATE TABLE learner_topic_mastery (
+    learner_id TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
+    mastery_score REAL NOT NULL,
+    confidence REAL NOT NULL,
+    last_assessed_at DATETIME,
+    PRIMARY KEY (learner_id, topic_id)
+);
+```
+
+`learner_evidence` đặc biệt quan trọng vì nó cho biết hệ thống kết luận dựa trên:
+
+* Học sinh tự khai.
+* Kết quả quiz.
+* Số lần làm sai.
+* Thời gian hoàn thành bài.
+* Nội dung cuộc trò chuyện.
+* Bài kiểm tra chẩn đoán.
+
+## 3. Thêm bài kiểm tra chẩn đoán
+
+Không nên tin hoàn toàn vào câu “em là người mới” hoặc “em khá môn này”. Hệ thống cần kiểm chứng bằng quiz ngắn.
+
+Quy trình:
+
+```text
+Học sinh nhập mục tiêu
+      ↓
+Hệ thống xác định chủ đề cần đánh giá
+      ↓
+Sinh 5–10 câu hỏi phân tầng
+      ↓
+Chấm đáp án và phân tích lỗi
+      ↓
+Cập nhật mastery của từng kiến thức
+```
+
+Mỗi câu hỏi nên gắn với:
+
+```json
+{
+  "question_id": "q_102",
+  "concept_ids": ["trigonometry.sin", "triangle.right"],
+  "difficulty": 0.45,
+  "prerequisites": ["algebra.equation"],
+  "answer": "B",
+  "learner_answer": "C",
+  "correct": false,
+  "error_type": "conceptual_misconception"
+}
+```
+
+Bạn có thể tái sử dụng pipeline quiz hiện tại, nhưng cần sửa `QuizGeneratorAgent` để trả thêm:
+
+* `concept_ids`
+* `difficulty`
+* `skill_type`
+* `prerequisites`
+* `diagnostic_value`
+
+## 4. Chuẩn hóa knowledge graph
+
+Bạn đã có `ContentAnalyzerAgent` tạo knowledge graph từ tài liệu.  Tuy nhiên, graph cần được chuẩn hóa thành graph phục vụ lập kế hoạch:
+
+```json
+{
+  "concepts": [
+    {
+      "id": "math.trigonometry.sin",
+      "name": "Tỉ số sin",
+      "difficulty": 0.4,
+      "estimated_minutes": 90
+    }
+  ],
+  "relations": [
+    {
+      "source": "math.algebra.equation",
+      "target": "math.trigonometry.sin",
+      "type": "prerequisite"
+    }
+  ]
+}
+```
+
+Mỗi concept cần có tối thiểu:
+
+* ID ổn định.
+* Tên và mô tả.
+* Điều kiện tiên quyết.
+* Độ khó.
+* Thời lượng ước tính.
+* Tài liệu liên quan.
+* Câu hỏi đánh giá liên quan.
+* Mức độ thành thạo của học sinh.
+
+Khi đó, hệ thống mới có thể hiểu rằng hai học sinh cùng muốn học lượng giác nhưng:
+
+* Học sinh A yếu phương trình nên phải ôn đại số trước.
+* Học sinh B đã vững đại số nên đi thẳng vào lượng giác.
+* Học sinh C chỉ có 20 phút mỗi ngày nên cần chia bài nhỏ hơn.
+
+## 5. Tạo `MasteryModel`
+
+Mỗi kiến thức nên có điểm thành thạo từ `0` đến `1`.
+
+Phiên bản MVP có thể dùng công thức đơn giản:
+
+```python
+def update_mastery(
+    old_mastery: float,
+    correct: bool,
+    difficulty: float,
+    hint_used: bool,
+    attempt_count: int
+) -> float:
+    performance = 1.0 if correct else 0.0
+
+    if hint_used:
+        performance *= 0.75
+
+    if attempt_count > 1:
+        performance *= max(0.5, 1 - 0.1 * (attempt_count - 1))
+
+    weight = 0.15 + difficulty * 0.15
+
+    return max(
+        0.0,
+        min(1.0, old_mastery * (1 - weight) + performance * weight)
+    )
+```
+
+Quy ước ban đầu:
+
+```text
+0.00–0.29: chưa biết
+0.30–0.49: đang hình thành
+0.50–0.69: hiểu cơ bản
+0.70–0.84: khá vững
+0.85–1.00: thành thạo
+```
+
+Sau này có thể nâng cấp sang Bayesian Knowledge Tracing hoặc Item Response Theory, nhưng chưa cần dùng ngay ở MVP.
+
+## 6. Thay đổi logic tạo roadmap
+
+`AssessmentAgent` hiện tại nên được chuyển từ đánh giá chung bằng văn bản sang tạo một `learning gap map` có cấu trúc:
+
+```json
+{
+  "target_concepts": [
+    "math.trigonometry.sin",
+    "math.trigonometry.cos",
+    "math.trigonometry.identity"
+  ],
+  "learning_gaps": [
+    {
+      "concept_id": "math.algebra.equation",
+      "current_mastery": 0.35,
+      "required_mastery": 0.7,
+      "priority": "critical",
+      "reason": "Prerequisite of trigonometric equations"
+    }
+  ],
+  "skipped_concepts": [
+    {
+      "concept_id": "math.geometry.triangle",
+      "reason": "Current mastery is already 0.88"
+    }
+  ]
+}
+```
+
+`SyllabusArchitectAgent` sau đó chỉ chọn:
+
+```text
+Các concept cần học
++ prerequisite chưa đạt
+- concept đã thành thạo
+```
+
+`SchedulerAgent` phải tính tới:
+
+```python
+daily_capacity = minutes_per_day
+
+concept_duration = (
+    base_duration
+    * difficulty_factor
+    * learner_level_factor
+    * mastery_gap_factor
+)
+```
+
+Ví dụ:
+
+```python
+mastery_gap = required_mastery - current_mastery
+estimated_minutes = base_minutes * (1 + mastery_gap)
+```
+
+## 7. Thêm vòng lặp thích nghi
+
+Lộ trình cá nhân hóa không nên được tạo một lần rồi giữ nguyên.
+
+Sau mỗi buổi học:
+
+```text
+Hoàn thành nội dung
+      ↓
+Mini quiz
+      ↓
+Cập nhật mastery
+      ↓
+So sánh tiến độ thực tế với kế hoạch
+      ↓
+Giữ nguyên / tăng tốc / ôn lại / lập lịch lại
+```
+
+Các quy tắc MVP:
+
+```python
+if mastery >= 0.85:
+    mark_concept_mastered()
+    reduce_future_review()
+
+elif mastery >= 0.65:
+    schedule_short_review()
+
+elif repeated_errors >= 2:
+    add_prerequisite_review()
+    change_resource_type()
+    reduce_next_lesson_difficulty()
+
+if learner_is_behind_schedule:
+    reschedule_unfinished_items()
+    preserve_critical_prerequisites()
+```
+
+Không nên yêu cầu LLM tự quyết định toàn bộ. Các ràng buộc cứng như thời gian, prerequisite và số phút mỗi ngày nên được xử lý bằng code. LLM phù hợp hơn cho:
+
+* Hiểu ngôn ngữ tự nhiên.
+* Giải thích lý do.
+* Sinh nội dung học.
+* Đề xuất tài nguyên.
+* Phân tích loại lỗi.
+
+## 8. API nên bổ sung
+
+```text
+POST /learners
+GET  /learners/{learner_id}
+PATCH /learners/{learner_id}
+
+POST /learners/{learner_id}/understand-input
+POST /learners/{learner_id}/diagnostic/start
+POST /learners/{learner_id}/diagnostic/submit
+
+GET  /learners/{learner_id}/mastery
+POST /learners/{learner_id}/learning-events
+
+POST /learners/{learner_id}/roadmaps
+POST /roadmaps/{roadmap_id}/recalculate
+PATCH /roadmaps/{roadmap_id}/items/{item_id}
+```
+
+Đầu vào cho `understand-input`:
+
+```json
+{
+  "message": "Em muốn học Python để làm phân tích dữ liệu...",
+  "session_id": "session_01"
+}
+```
+
+Kết quả:
+
+```json
+{
+  "profile_patch": {},
+  "missing_fields": [],
+  "contradictions": [],
+  "clarification_question": null,
+  "diagnostic_required": true
+}
+```
+
+## 9. Sửa giao diện onboarding
+
+Wizard hiện tại đã thu hồ sơ người học.  Bạn nên cho học sinh lựa chọn giữa hai cách:
+
+### Cách 1: Nhập tự nhiên
+
+```text
+“Hãy kể cho NoteMind biết bạn muốn học gì,
+trình độ hiện tại và thời gian bạn có.”
+```
+
+Sau khi phân tích, hiển thị:
+
+```text
+Tôi hiểu rằng:
+
+• Bạn muốn đạt IELTS 6.5 trong 4 tháng
+• Trình độ hiện tại khoảng 5.0
+• Có thể học 60 phút mỗi ngày
+• Writing là kỹ năng yếu nhất
+
+[Chính xác] [Chỉnh sửa]
+```
+
+### Cách 2: Form có cấu trúc
+
+Dùng wizard hiện tại làm phương án dự phòng hoặc để học sinh chỉnh kết quả hệ thống hiểu được.
+
+Không nên tạo roadmap ngay sau một tin nhắn nếu còn thiếu:
+
+* Mục tiêu.
+* Phạm vi môn học.
+* Thời hạn.
+* Thời gian có thể học.
+* Trình độ hoặc kết quả chẩn đoán.
+
+## 10. Thứ tự triển khai thực tế
+
+### Giai đoạn 1 — MVP hiểu đầu vào
+
+1. Mở rộng `LearnerProfile`.
+2. Tạo bảng `learner_profiles`.
+3. Tạo `LearnerUnderstandingAgent`.
+4. Parse đầu vào sang structured JSON.
+5. Hiển thị màn hình xác nhận thông tin.
+6. Truyền profile mới vào roadmap pipeline hiện tại.
+
+Kết quả: hệ thống hiểu được yêu cầu tự nhiên và tạo roadmap phù hợp ở mức cơ bản.
+
+### Giai đoạn 2 — Cá nhân hóa theo năng lực
+
+1. Thêm concept ID vào knowledge graph.
+2. Sinh diagnostic quiz theo concept.
+3. Lưu mastery theo từng concept.
+4. Chuyển `AssessmentAgent` sang gap analysis.
+5. Bỏ qua phần đã thành thạo và thêm prerequisite còn yếu.
+
+Kết quả: hai học sinh có cùng mục tiêu sẽ nhận lộ trình khác nhau.
+
+### Giai đoạn 3 — Roadmap thích nghi
+
+1. Ghi nhận learning events.
+2. Cập nhật mastery sau quiz.
+3. Theo dõi hoàn thành và thời gian thực tế.
+4. Tái lập lịch khi học sinh nhanh hoặc chậm hơn dự kiến.
+5. Thêm spaced repetition và review tự động.
+
+Kết quả: lộ trình thay đổi theo tiến độ thật, không chỉ theo thông tin ban đầu.
+
+## Tiêu chí để đánh giá hệ thống
+
+Bạn nên kiểm thử ít nhất các chỉ số:
+
+| Chỉ số                        | Ý nghĩa                                               |
+| ----------------------------- | ----------------------------------------------------- |
+| Profile extraction accuracy   | Hệ thống trích xuất đúng thông tin học sinh không     |
+| Missing-field detection       | Có phát hiện thông tin quan trọng còn thiếu không     |
+| Diagnostic validity           | Quiz có đo đúng kiến thức cần đo không                |
+| Roadmap constraint compliance | Lộ trình có đúng thời gian và deadline không          |
+| Prerequisite correctness      | Có học đúng thứ tự kiến thức không                    |
+| Personalization difference    | Hai profile khác nhau có nhận roadmap khác nhau không |
+| Learning gain                 | Điểm đánh giá sau học có tăng không                   |
+| Completion rate               | Học sinh hoàn thành bao nhiêu phần trăm lộ trình      |
+
+## Việc nên làm ngay
+
+Bước có giá trị cao nhất là triển khai:
+
+```text
+LearnerUnderstandingAgent
+        +
+Persistent LearnerProfile
+        +
+Diagnostic Quiz
+        +
+Topic Mastery
+```
+
+Bạn chưa cần thay toàn bộ `RoadmapAgent`. Hãy giữ pipeline hiện có và thay đầu vào của nó từ một form profile đơn giản thành:
+
+```python
+roadmap_context = {
+    "learner_profile": learner_profile,
+    "topic_mastery": mastery_map,
+    "learning_gaps": gap_analysis,
+    "knowledge_graph": knowledge_graph,
+    "constraints": schedule_constraints
+}
+```
+
+Khi bốn loại dữ liệu này được truyền vào `SyllabusArchitectAgent` và `SchedulerAgent`, hệ thống mới thực sự tạo lộ trình khác nhau theo **mục tiêu, năng lực, lỗ hổng kiến thức, thời gian và kết quả học thực tế** của từng học sinh.
