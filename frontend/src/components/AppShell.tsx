@@ -9,6 +9,7 @@ import {
   LogOut,
   Map,
   Menu,
+  ScanEye,
   ServerCog,
   ShieldCheck,
   UserRound,
@@ -38,6 +39,7 @@ const navigation: NavItem[] = [
   { to: "/mastery", label: "Mức độ thành thạo", icon: BookOpenCheck, roles: ["student"] },
   { to: "/roadmap", label: "Lộ trình", icon: Map, roles: ["student"] },
   { to: "/courses", label: "Khóa học và tài liệu", icon: BookOpen, roles: ["teacher", "admin"] },
+  { to: "/exam-workflow", label: "Bóc tách đề thi", icon: ScanEye },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
   { to: "/operations", label: "Vận hành", icon: ServerCog, roles: ["admin"] },
 ];

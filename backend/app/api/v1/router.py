@@ -7,6 +7,7 @@ from app.api.v1.routes import (
     content,
     course_learning_paths,
     diagnostics,
+    exam_workflow,
     jobs,
     learners,
     permissions,
@@ -28,3 +29,4 @@ api_router.include_router(course_learning_paths.router)
 api_router.include_router(diagnostics.router)
 api_router.include_router(content.router)
 api_router.include_router(content.job_router)
+api_router.include_router(exam_workflow.router)

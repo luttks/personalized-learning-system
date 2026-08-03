@@ -5,6 +5,7 @@ import { AppShell } from "./components/AppShell";
 import { LoginPage, RegisterPage } from "./pages/AuthPages";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CourseManagementPage } from "./pages/CourseManagementPage";
+import { ExamWorkflowPage } from "./pages/ExamWorkflowPage";
 import { LearningProfilePage } from "./pages/LearningProfilePage";
 import { MasteryPage } from "./pages/MasteryPage";
 import { OperationsPage } from "./pages/OperationsPage";
@@ -24,6 +25,7 @@ export default function App() {
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />
+          <Route path="exam-workflow" element={<ExamWorkflowPage />} />
 
           <Route element={<RequireRole allowed={["student"]} />}>
             <Route path="catalog" element={<StudentCatalogPage />} />
