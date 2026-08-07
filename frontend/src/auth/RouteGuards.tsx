@@ -10,12 +10,33 @@ export function RequireAuth() {
 
   if (isBootstrapping) return <LoadingState />;
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  
+  if (
+    user.role === "student" &&
+    !user.has_completed_profile &&
+    location.pathname !== "/student-profile" &&
+    location.pathname !== "/"
+  ) {
+    return <Navigate to="/student-profile" replace state={{ blocked: true }} />;
+  }
+  
   return <Outlet />;
 }
 
 export function RequireRole({ allowed }: { allowed: UserRole[] }) {
   const { user } = useAuth();
+  const location = useLocation();
   if (!user || !allowed.includes(user.role)) return <Navigate to="/" replace />;
+  
+  if (
+    user.role === "student" &&
+    !user.has_completed_profile &&
+    location.pathname !== "/student-profile" &&
+    location.pathname !== "/"
+  ) {
+    return <Navigate to="/student-profile" replace state={{ blocked: true }} />;
+  }
+
   return <Outlet />;
 }
 

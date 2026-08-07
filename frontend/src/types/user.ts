@@ -1,6 +1,5 @@
 export type UserRole =
   | "student"
-  | "teacher"
   | "admin";
 
 export interface User {
@@ -11,6 +10,7 @@ export interface User {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  has_completed_profile: boolean;
 }
 
 export interface CreateUserPayload {
@@ -22,6 +22,5 @@ export interface CreateUserPayload {
 
 export const roleLabels: Record<UserRole, string> = {
   student: "Học sinh",
-  teacher: "Giáo viên",
   admin: "Quản trị viên",
 };

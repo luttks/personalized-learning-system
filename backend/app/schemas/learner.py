@@ -178,3 +178,7 @@ class RoadmapPlan(BaseModel):
 class RoadmapCreateResponse(RoadmapPlan):
     id: UUID
     status: str
+    topic_resources: dict[str, dict] = Field(
+        default_factory=dict,
+        description="Tài nguyên crawl theo từng topic: {concept_id: {youtube, quiz, academic, github}}"
+    )

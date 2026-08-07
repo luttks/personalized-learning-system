@@ -24,9 +24,8 @@ const initialForm: CreateUserPayload = {
   role: "student",
 };
 
-const roleTone: Record<UserRole, string> = {
+const roleColors: Record<UserRole, string> = {
   student: "bg-emerald-50 text-emerald-700",
-  teacher: "bg-sky-50 text-sky-700",
   admin: "bg-amber-50 text-amber-700",
 };
 
@@ -96,7 +95,6 @@ export function UsersPage() {
             <Field label="Vai trò">
               <Select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}>
                 <option value="student">Học sinh</option>
-                <option value="teacher">Giáo viên</option>
                 <option value="admin">Quản trị viên</option>
               </Select>
             </Field>
@@ -130,7 +128,7 @@ export function UsersPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${roleTone[user.role]}`}>{roleLabels[user.role]}</span></td>
+                      <td className="px-4 py-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${roleColors[user.role]}`}>{roleLabels[user.role]}</span></td>
                       <td className="px-4 py-4"><span className="flex items-center gap-2 text-slate-600"><span className={`size-2 rounded-full ${user.is_active ? "bg-emerald-500" : "bg-red-500"}`} />{user.is_active ? "Hoạt động" : "Đã khóa"}</span></td>
                       <td className="px-4 py-4 text-slate-500">{new Date(user.created_at).toLocaleDateString("vi-VN")}</td>
                     </tr>

@@ -1,6 +1,8 @@
 import axios from "axios";
 import { Save, UserRound } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { useLocation } from "react-router-dom";
+import { useAuth } from "../auth/useAuth";
 
 import { getApiErrorMessage } from "../api/client";
 import {
@@ -21,18 +23,13 @@ import {
 import type { StudentProfilePayload } from "../types/student";
 
 const initialProfile: StudentProfilePayload = {
-  date_of_birth: null,
+  education_level: "under_university",
   grade_level: 10,
-  school_name: null,
-  city: null,
   preferred_learning_mode: "balanced",
   explanation_depth: "medium",
   preferred_session_minutes: 30,
   study_days_per_week: 4,
   study_minutes_per_day: 45,
-  favourite_subjects: null,
-  difficult_subjects: null,
-  learning_notes: null,
 };
 
 export function StudentProfilePage() {
@@ -42,6 +39,9 @@ export function StudentProfilePage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const { user, refreshUser } = useAuth();
+  const location = useLocation();
+  const showBlockedNotice = location.state?.blocked === true;
 
   useEffect(() => {
     void getStudentProfile()
@@ -76,6 +76,10 @@ export function StudentProfilePage() {
       setForm(profile);
       setExists(true);
       setSuccess("Đã lưu hồ sơ học sinh.");
+      if (!exists) {
+        // Force refresh user to update has_completed_profile status
+        void refreshUser();
+      }
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, "Không thể lưu hồ sơ."));
     } finally {
@@ -91,6 +95,9 @@ export function StudentProfilePage() {
         title="Hồ sơ học sinh"
         description="Thông tin học tập và nhịp học hằng tuần."
       />
+      {user?.role === "student" && !user.has_completed_profile && (
+        <Notice tone="warning">Vui lòng điền đầy đủ thông tin trước khi sử dụng các chức năng.</Notice>
+      )}
       {error && <Notice>{error}</Notice>}
       {success && <Notice tone="success" onClose={() => setSuccess("")}>{success}</Notice>}
 
@@ -101,46 +108,55 @@ export function StudentProfilePage() {
             <h2 className="text-lg font-bold text-slate-900">Thông tin cơ bản</h2>
           </div>
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-            <Field label="Khối lớp">
-              <Input
-                type="number"
-                min={1}
-                max={12}
-                value={form.grade_level}
-                onChange={(event) => update("grade_level", Number(event.target.value))}
-                required
-              />
+            <Field label="Trình độ học vấn">
+              <Select
+                value={form.education_level}
+                onChange={(event) => {
+                  const level = event.target.value as "under_university" | "university";
+                  update("education_level", level);
+                  if (level === "university") {
+                    update("grade_level", 1);
+                  } else {
+                    update("grade_level", 10);
+                  }
+                }}
+              >
+                <option value="under_university">Dưới đại học (Cấp 1-12)</option>
+                <option value="university">Đại học</option>
+              </Select>
             </Field>
-            <Field label="Ngày sinh">
-              <Input
-                type="date"
-                value={form.date_of_birth ?? ""}
-                onChange={(event) => update("date_of_birth", event.target.value || null)}
-              />
-            </Field>
-            <Field label="Thành phố">
-              <Input
-                value={form.city ?? ""}
-                onChange={(event) => update("city", event.target.value || null)}
-                maxLength={100}
-              />
-            </Field>
-            <Field label="Trường học" >
-              <Input
-                value={form.school_name ?? ""}
-                onChange={(event) => update("school_name", event.target.value || null)}
-                maxLength={255}
-              />
-            </Field>
+            {form.education_level === "under_university" ? (
+              <Field label="Khối lớp">
+                <Input
+                  type="number"
+                  min={1}
+                  max={12}
+                  value={form.grade_level}
+                  onChange={(event) => update("grade_level", Number(event.target.value))}
+                  required
+                />
+              </Field>
+            ) : (
+              <Field label="Sinh viên năm">
+                <Input
+                  type="number"
+                  min={1}
+                  max={7}
+                  value={form.grade_level}
+                  onChange={(event) => update("grade_level", Number(event.target.value))}
+                  required
+                />
+              </Field>
+            )}
             <Field label="Cách học ưu tiên">
               <Select
                 value={form.preferred_learning_mode}
                 onChange={(event) => update("preferred_learning_mode", event.target.value as StudentProfilePayload["preferred_learning_mode"])}
               >
                 <option value="balanced">Cân bằng</option>
-                <option value="visual">Trực quan</option>
-                <option value="reading">Đọc tài liệu</option>
-                <option value="practice">Thực hành</option>
+                <option value="theory_first">Học lý thuyết trước</option>
+                <option value="practice_first">Thực hành trước</option>
+                <option value="step_by_step">Từng bước một</option>
               </Select>
             </Field>
             <Field label="Độ chi tiết giải thích">
@@ -183,22 +199,7 @@ export function StudentProfilePage() {
           </div>
         </section>
 
-        <section className="border-t border-slate-200 pt-7">
-          <h2 className="mb-4 text-lg font-bold text-slate-900">Môn học và ghi chú</h2>
-          <div className="grid gap-5 sm:grid-cols-2">
-            <Field label="Môn học yêu thích">
-              <Input value={form.favourite_subjects ?? ""} onChange={(event) => update("favourite_subjects", event.target.value || null)} />
-            </Field>
-            <Field label="Môn học còn khó">
-              <Input value={form.difficult_subjects ?? ""} onChange={(event) => update("difficult_subjects", event.target.value || null)} />
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Ghi chú học tập">
-                <Textarea value={form.learning_notes ?? ""} onChange={(event) => update("learning_notes", event.target.value || null)} />
-              </Field>
-            </div>
-          </div>
-        </section>
+
 
         <div className="sticky bottom-0 flex justify-end border-t border-slate-200 bg-slate-50/95 py-4 backdrop-blur">
           <Button type="submit" isLoading={saving}>

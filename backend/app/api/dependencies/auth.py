@@ -113,15 +113,11 @@ get_current_student = require_roles(
     UserRole.STUDENT,
 )
 
-get_current_teacher = require_roles(
-    UserRole.TEACHER,
-)
-
 get_current_admin = require_roles(
     UserRole.ADMIN,
 )
 
-get_current_teacher_or_admin = require_roles(
-    UserRole.TEACHER,
+get_current_any_role = require_roles(
+    UserRole.STUDENT,
     UserRole.ADMIN,
 )

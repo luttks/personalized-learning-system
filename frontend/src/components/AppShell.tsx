@@ -1,6 +1,5 @@
 import {
   Activity,
-  BookOpenCheck,
   BookOpen,
   BrainCircuit,
   ChevronDown,
@@ -9,7 +8,6 @@ import {
   LogOut,
   Map,
   Menu,
-  ServerCog,
   ShieldCheck,
   UserRound,
   Users,
@@ -33,13 +31,10 @@ interface NavItem {
 const navigation: NavItem[] = [
   { to: "/", label: "Tổng quan", icon: Gauge },
   { to: "/student-profile", label: "Hồ sơ học sinh", icon: UserRound, roles: ["student"] },
-  { to: "/catalog", label: "Catalog khóa học", icon: BookOpen, roles: ["student"] },
-  { to: "/learning-profile", label: "Hồ sơ học tập", icon: BrainCircuit, roles: ["student"] },
-  { to: "/mastery", label: "Mức độ thành thạo", icon: BookOpenCheck, roles: ["student"] },
-  { to: "/roadmap", label: "Lộ trình", icon: Map, roles: ["student"] },
-  { to: "/courses", label: "Khóa học và tài liệu", icon: BookOpen, roles: ["teacher", "admin"] },
+  { to: "/personalized", label: "Học tập cá nhân hóa", icon: BrainCircuit, roles: ["student"] },
+  { to: "/roadmap", label: "Quản lý lộ trình", icon: Map, roles: ["student"] },
+  { to: "/courses", label: "Khóa học và tài liệu", icon: BookOpen, roles: ["student", "admin"] },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
-  { to: "/operations", label: "Vận hành", icon: ServerCog, roles: ["admin"] },
 ];
 
 export function AppShell() {

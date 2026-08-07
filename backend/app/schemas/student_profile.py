@@ -5,30 +5,22 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    model_validator,
 )
 
 from app.models.student_profile import (
+    EducationLevel,
     ExplanationDepth,
     LearningMode,
 )
 
 
 class StudentProfileBase(BaseModel):
-    date_of_birth: date | None = None
+    education_level: EducationLevel = EducationLevel.UNDER_UNIVERSITY
 
     grade_level: int = Field(
         ge=1,
         le=12,
-    )
-
-    school_name: str | None = Field(
-        default=None,
-        max_length=255,
-    )
-
-    city: str | None = Field(
-        default=None,
-        max_length=100,
     )
 
     preferred_learning_mode: LearningMode = (
@@ -57,32 +49,26 @@ class StudentProfileBase(BaseModel):
         le=600,
     )
 
-    favourite_subjects: str | None = None
-    difficult_subjects: str | None = None
-    learning_notes: str | None = None
-
 
 class StudentProfileCreate(StudentProfileBase):
-    pass
+    @model_validator(mode="after")
+    def validate_grade_level(self) -> "StudentProfileCreate":
+        if self.education_level == EducationLevel.UNDER_UNIVERSITY:
+            if self.grade_level < 1 or self.grade_level > 12:
+                raise ValueError("grade_level must be between 1 and 12 for under_university")
+        elif self.education_level == EducationLevel.UNIVERSITY:
+            if self.grade_level < 1 or self.grade_level > 7:
+                raise ValueError("grade_level must be between 1 and 7 for university")
+        return self
 
 
 class StudentProfileUpdate(BaseModel):
-    date_of_birth: date | None = None
+    education_level: EducationLevel | None = None
 
     grade_level: int | None = Field(
         default=None,
         ge=1,
         le=12,
-    )
-
-    school_name: str | None = Field(
-        default=None,
-        max_length=255,
-    )
-
-    city: str | None = Field(
-        default=None,
-        max_length=100,
     )
 
     preferred_learning_mode: LearningMode | None = None
@@ -105,10 +91,6 @@ class StudentProfileUpdate(BaseModel):
         ge=10,
         le=600,
     )
-
-    favourite_subjects: str | None = None
-    difficult_subjects: str | None = None
-    learning_notes: str | None = None
 
 
 class StudentProfileResponse(StudentProfileBase):

@@ -18,6 +18,7 @@ from app.models.course_learning_path import CourseLearningPath
 from app.models.course_publication import CoursePublication
 from app.models.diagnostic import DiagnosticAssessment, DiagnosticAttempt
 from app.models.document_analysis import DocumentAnalysis
+from app.models.exam_analysis_model import ExamAnalysis
 from app.models.learner import (
     LearnerEvidence,
     LearnerProfile,
@@ -26,6 +27,7 @@ from app.models.learner import (
     RoadmapItem,
 )
 from app.models.learner_course_profile import LearnerCourseProfile
+from app.models.personalized_roadmap import PersonalizedRoadmap
 from app.models.refresh_token import RefreshToken
 from app.models.student_profile import (
     ExplanationDepth,
@@ -50,6 +52,7 @@ __all__ = [
     "DiagnosticAttempt",
     "Document",
     "DocumentAnalysis",
+    "ExamAnalysis",
     "DocumentJob",
     "DocumentJobStatus",
     "ExplanationDepth",
@@ -58,6 +61,7 @@ __all__ = [
     "LearnerProfile",
     "LearnerTopicMastery",
     "LearningMode",
+    "PersonalizedRoadmap",
     "RefreshToken",
     "Roadmap",
     "RoadmapItem",

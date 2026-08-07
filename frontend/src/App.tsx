@@ -5,12 +5,9 @@ import { AppShell } from "./components/AppShell";
 import { LoginPage, RegisterPage } from "./pages/AuthPages";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CourseManagementPage } from "./pages/CourseManagementPage";
-import { LearningProfilePage } from "./pages/LearningProfilePage";
-import { MasteryPage } from "./pages/MasteryPage";
-import { OperationsPage } from "./pages/OperationsPage";
+import { PersonalizedLearningPage } from "./pages/PersonalizedLearningPage";
 import { RoadmapPage } from "./pages/RoadmapPage";
 import { StudentProfilePage } from "./pages/StudentProfilePage";
-import { StudentCatalogPage } from "./pages/StudentCatalogPage";
 import { UsersPage } from "./pages/UsersPage";
 
 export default function App() {
@@ -26,19 +23,16 @@ export default function App() {
           <Route index element={<DashboardPage />} />
 
           <Route element={<RequireRole allowed={["student"]} />}>
-            <Route path="catalog" element={<StudentCatalogPage />} />
             <Route path="student-profile" element={<StudentProfilePage />} />
-            <Route path="learning-profile" element={<LearningProfilePage />} />
-            <Route path="mastery" element={<MasteryPage />} />
+            <Route path="personalized" element={<PersonalizedLearningPage />} />
             <Route path="roadmap" element={<RoadmapPage />} />
           </Route>
 
           <Route element={<RequireRole allowed={["admin"]} />}>
             <Route path="users" element={<UsersPage />} />
-            <Route path="operations" element={<OperationsPage />} />
           </Route>
 
-          <Route element={<RequireRole allowed={["teacher", "admin"]} />}>
+          <Route element={<RequireRole allowed={["student", "admin"]} />}>
             <Route path="courses" element={<CourseManagementPage />} />
           </Route>
         </Route>

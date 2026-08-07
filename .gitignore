@@ -34,3 +34,6 @@ uploads/
 coverage/
 htmlcov/
 .coverage
+
+# Docs
+docs/
