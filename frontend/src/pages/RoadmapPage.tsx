@@ -48,7 +48,7 @@ export function RoadmapPage() {
 
   if (selectedRoadmap) {
     // Reconstruct phaseResources from the stored data
-    const phaseResources: PhaseResources = {};
+    const phaseResources: Record<string, PhaseResources> = {};
     selectedRoadmap.roadmap_data.phases?.forEach(p => {
       const pData = p as any;
       if (pData.resources) {
@@ -79,7 +79,9 @@ export function RoadmapPage() {
 
         <RoadmapInlinePanel 
           roadmap={selectedRoadmap.roadmap_data} 
-          phaseResources={phaseResources} 
+          phaseResources={phaseResources}
+          subject={selectedRoadmap.title}
+          goal="Hoàn thành lộ trình"
         />
       </div>
     );

@@ -642,7 +642,7 @@ Trả về JSON (chỉ JSON):
 # ---------------------------------------------------------------------------
 
 async def get_ai_recommendation_groq(
-    questions: list[str],
+    questions: list[Any],
     score_ratio: float | None,
     weak_areas: str | None,
     gemini_api_keys: list[str],
@@ -659,9 +659,59 @@ async def get_ai_recommendation_groq(
     if weak_areas:
         score_context += f"\nHỌC SINH TỰ NHẬN XÉT ĐIỂM YẾU: {weak_areas}"
 
-    questions_text = "\n".join(f"- {q}" for q in questions[:20])
+    # Determine mode based on question format
+    is_post_exam = len(questions) > 0 and isinstance(questions[0], dict)
+    
+    questions_text = ""
+    if is_post_exam:
+        for q in questions[:20]:
+            q_id = q.get("id", "Câu")
+            q_content = q.get("content", "")[:300]
+            q_level = q.get("level", "")
+            questions_text += f"- [{q_id}] (Mức độ hỗ trợ: {q_level}): {q_content}\n"
+    else:
+        questions_text = "\n".join(f"- {q}" for q in questions[:20])
 
-    prompt = f"""Bạn là chuyên gia phân tích năng lực học tập.{score_context}
+    if is_post_exam:
+        prompt = f"""Bạn là chuyên gia phân tích năng lực học tập.{score_context}
+
+NHIỆM VỤ: Phân loại các câu hỏi dưới đây theo 3 nhóm mức độ (cơ bản, vận dụng, vận dụng cao) và đưa ra lời khuyên cá nhân hóa dựa trên mức độ hỗ trợ mà học sinh yêu cầu.
+Chú ý KHÔNG giải bài, KHÔNG cho đáp án trực tiếp.
+
+QUY TẮC XỬ LÝ MỨC ĐỘ HỖ TRỢ (RẤT QUAN TRỌNG):
+Học sinh đã chọn 1 trong 3 mức độ cho từng câu:
+1. "Không biết làm": Nếu là câu dễ, hãy hướng dẫn chi tiết cách tiếp cận. Nếu là câu khó, hãy thẳng thắn báo rằng câu này cần tích lũy lâu dài, đưa ra cách giải sơ sài, và sinh ra một phần "mini_test_and_roadmap" (gồm 2-3 câu hỏi siêu nền tảng + lộ trình ngắn) để test xem họ có lủng kiến thức cơ bản không. CHÚ Ý: Nếu học sinh chọn "Không biết làm" cho câu dễ nhưng "Sắp làm được" cho câu khó, đây là mâu thuẫn, hãy tự động coi câu dễ đó như ở mức 2.
+2. "Hiểu đề nhưng không biết bắt đầu từ đâu": Đưa ra mức độ câu hỏi, nhóm kiến thức, mẹo giải, nên chú ý điểm nào, khai thác từ đâu, lỗi cần tránh.
+3. "Sắp làm được rồi nhưng vẫn còn thiếu một chút": Đưa ra mức độ, nhóm kiến thức, cách giải/điểm chốt hạ, và bẫy khiến thí sinh làm sai.
+
+Câu hỏi và mức độ yêu cầu:
+{questions_text}
+
+Trả về JSON đúng cấu trúc sau (chỉ JSON):
+{{
+  "nhom_co_ban": {{
+    "loi_khuyen_chung": "Nhận xét tổng quan nhóm câu",
+    "chi_tiet_tung_cau": [
+      {{
+        "id_cau": "Câu I",
+        "kien_thuc_can_hoc": "Tên kiến thức",
+        "loi_khuyen_ngan": "Phân tích, Mẹo, Điểm chốt hoặc Bẫy (tùy mức độ hỗ trợ)",
+        "mini_test_and_roadmap": "Chỉ có nếu rơi vào trường hợp (Không biết làm + Câu khó). Nêu 2-3 câu hỏi nền tảng và cách ôn tập. Nếu không, để trống chuỗi này."
+      }}
+    ]
+  }},
+  "nhom_van_dung": {{
+    "loi_khuyen_chung": "...",
+    "chi_tiet_tung_cau": []
+  }},
+  "nhom_van_dung_cao": {{
+    "loi_khuyen_chung": "...",
+    "chi_tiet_tung_cau": []
+  }},
+  "tom_tat_tong_quat": "2-3 câu nhận xét tổng thể"
+}}"""
+    else:
+        prompt = f"""Bạn là chuyên gia phân tích năng lực học tập.{score_context}
 
 NHIỆM VỤ: Phân loại các câu hỏi dưới đây theo 3 nhóm mức độ và đưa ra lời khuyên. KHÔNG giải bài, KHÔNG cho đáp án.
 

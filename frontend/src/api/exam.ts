@@ -41,6 +41,7 @@ export interface ExamQuestionDetail {
   id_cau: string;
   kien_thuc_can_hoc: string;
   loi_khuyen_ngan: string;
+  mini_test_and_roadmap?: string;
 }
 
 export interface ExamGroup {
@@ -53,6 +54,8 @@ export interface ExamRecommendation {
   nhom_van_dung?: ExamGroup;
   nhom_van_dung_cao?: ExamGroup;
   tom_tat_tong_quat?: string;
+  _goal?: string;
+  [key: string]: any;
 }
 
 export interface YouTubeTutorial {
@@ -149,6 +152,16 @@ export interface ExamAnalysisSummary {
   created_at: string;
 }
 
+export interface ParseExamResponse {
+  header: string;
+  question_count: number;
+  formula_count: number;
+  questions: ExamQuestion[];
+  raw_markdown: string;
+  ocr_engine: string;
+  filename: string;
+}
+
 // ---------------------------------------------------------------------------
 // API calls
 // ---------------------------------------------------------------------------
@@ -165,6 +178,23 @@ export async function analyzeDocument(
 
   const response = await apiClient.post<DocumentAnalysisResult>(
     "/learners/me/exams/analyze-document",
+    formData,
+    { headers: { "Content-Type": "multipart/form-data" } }
+  );
+  return response.data;
+}
+
+/**
+ * Luồng 2 — Bước 1: Parse đề thi để chọn câu hỏi
+ */
+export async function parseExamDocument(
+  file: File
+): Promise<ParseExamResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await apiClient.post<ParseExamResponse>(
+    "/learners/me/exams/parse-exam",
     formData,
     { headers: { "Content-Type": "multipart/form-data" } }
   );
@@ -203,7 +233,8 @@ export async function submitExam(
     // Luồng 2
     examScore?: string;
     examMaxScore?: string;
-    selfAssessedWeakAreas?: string;
+    selectedQuestions?: string;
+    rawText?: string;
   } = {}
 ): Promise<ExamAnalysisDetail> {
   const formData = new FormData();
@@ -217,7 +248,8 @@ export async function submitExam(
   if (options.rawTextForCrawl) formData.append("raw_text_for_crawl", options.rawTextForCrawl.slice(0, 1000));
   if (options.examScore !== undefined) formData.append("exam_score", options.examScore);
   if (options.examMaxScore !== undefined) formData.append("exam_max_score", options.examMaxScore);
-  if (options.selfAssessedWeakAreas) formData.append("self_assessed_weak_areas", options.selfAssessedWeakAreas);
+  if (options.selectedQuestions) formData.append("selected_questions", options.selectedQuestions);
+  if (options.rawText) formData.append("raw_text", options.rawText);
 
   const response = await apiClient.post<ExamAnalysisDetail>(
     "/learners/me/exams",

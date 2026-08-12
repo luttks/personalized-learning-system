@@ -1,7 +1,7 @@
 import axios from "axios";
 import { Save, UserRound } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
-import { useLocation } from "react-router-dom";
+
 import { useAuth } from "../auth/useAuth";
 
 import { getApiErrorMessage } from "../api/client";
@@ -18,7 +18,6 @@ import {
   Notice,
   PageHeader,
   Select,
-  Textarea,
 } from "../components/ui";
 import type { StudentProfilePayload } from "../types/student";
 
@@ -40,9 +39,6 @@ export function StudentProfilePage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const { user, refreshUser } = useAuth();
-  const location = useLocation();
-  const showBlockedNotice = location.state?.blocked === true;
-
   useEffect(() => {
     void getStudentProfile()
       .then((profile) => {
@@ -96,7 +92,7 @@ export function StudentProfilePage() {
         description="Thông tin học tập và nhịp học hằng tuần."
       />
       {user?.role === "student" && !user.has_completed_profile && (
-        <Notice tone="warning">Vui lòng điền đầy đủ thông tin trước khi sử dụng các chức năng.</Notice>
+        <Notice tone="error">Vui lòng điền đầy đủ thông tin trước khi sử dụng các chức năng.</Notice>
       )}
       {error && <Notice>{error}</Notice>}
       {success && <Notice tone="success" onClose={() => setSuccess("")}>{success}</Notice>}
@@ -131,7 +127,7 @@ export function StudentProfilePage() {
                   type="number"
                   min={1}
                   max={12}
-                  value={form.grade_level}
+                  value={form.grade_level ?? ""}
                   onChange={(event) => update("grade_level", Number(event.target.value))}
                   required
                 />
@@ -142,7 +138,7 @@ export function StudentProfilePage() {
                   type="number"
                   min={1}
                   max={7}
-                  value={form.grade_level}
+                  value={form.grade_level ?? ""}
                   onChange={(event) => update("grade_level", Number(event.target.value))}
                   required
                 />

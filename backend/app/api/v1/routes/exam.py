@@ -86,6 +86,16 @@ class QuizGenerateResponse(BaseModel):
     topic_summary: str
 
 
+class ParseExamResponse(BaseModel):
+    header: str
+    question_count: int
+    formula_count: int
+    questions: list[dict[str, Any]]
+    raw_markdown: str
+    ocr_engine: str
+    filename: str
+
+
 class ExamAnalysisSummary(BaseModel):
     id: str
     filename: str
@@ -109,7 +119,6 @@ class ExamAnalysisDetail(BaseModel):
     ocr_engine: str
     exam_score: float | None
     exam_max_score: float | None
-    self_assessed_weak_areas: str | None
     questions: list[dict[str, Any]]
     raw_markdown: str | None
     ai_recommendation: dict[str, Any]
@@ -324,33 +333,17 @@ async def generate_quiz(
 # ---------------------------------------------------------------------------
 
 @router.post(
-    "",
-    response_model=ExamAnalysisDetail,
-    status_code=status.HTTP_201_CREATED,
-    summary="Upload và phân tích bài thi / nộp kết quả onboarding",
+    "/parse-exam",
+    response_model=ParseExamResponse,
+    summary="[Luồng 2] Parse đề thi, lấy danh sách câu hỏi và đoạn văn (header)",
 )
-async def submit_exam(
+async def parse_exam(
     current_user: CurrentStudent,
     session: DatabaseSession,
     file: Annotated[UploadFile, File()],
-    mode: Annotated[str, Form()] = "post_exam",
-    # Luồng 1 fields
-    selected_goal: Annotated[str | None, Form()] = None,
-    quick_quiz_results: Annotated[str | None, Form()] = None,
-    subject: Annotated[str | None, Form()] = None,
-    raw_text_for_crawl: Annotated[str | None, Form()] = None,
-    is_code_related: Annotated[str, Form()] = "false",
-    # Luồng 2 fields
-    has_taken_exam: Annotated[str, Form()] = "true",
-    exam_score: Annotated[str | None, Form()] = None,
-    exam_max_score: Annotated[str | None, Form()] = None,
-    self_assessed_weak_areas: Annotated[str | None, Form()] = None,
-) -> ExamAnalysisDetail:
-    """
-    Nộp kết quả cuối cùng cho cả 2 luồng.
-    - mode='onboarding': kèm quick_quiz_results và selected_goal
-    - mode='post_exam':  kèm exam_score, exam_max_score, self_assessed_weak_areas
-    """
+) -> ParseExamResponse:
+    """OCR và Parse đề thi, trả về JSON."""
+    _require_llm()
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALL_SUPPORTED_EXTS:
@@ -361,6 +354,64 @@ async def submit_exam(
 
     file_bytes = await file.read()
     if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
+
+    try:
+        from app.services.exam_service import ocr_and_parse
+        result = await ocr_and_parse(file_bytes, filename, settings.gemini_api_keys)
+        return ParseExamResponse(
+            header=result.get("header", ""),
+            question_count=result.get("question_count", 0),
+            formula_count=result.get("formula_count", 0),
+            questions=result.get("questions", []),
+            raw_markdown=result.get("raw_markdown", ""),
+            ocr_engine=result.get("ocr_engine", ""),
+            filename=filename,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+
+
+@router.post(
+    "",
+    response_model=ExamAnalysisDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload và phân tích bài thi / nộp kết quả onboarding",
+)
+async def submit_exam(
+    current_user: CurrentStudent,
+    session: DatabaseSession,
+    mode: Annotated[str, Form()] = "post_exam",
+    file: Annotated[UploadFile | None, File()] = None,
+    # Luồng 1 fields
+    selected_goal: Annotated[str | None, Form()] = None,
+    quick_quiz_results: Annotated[str | None, Form()] = None,
+    subject: Annotated[str | None, Form()] = None,
+    raw_text_for_crawl: Annotated[str | None, Form()] = None,
+    is_code_related: Annotated[str, Form()] = "false",
+    # Luồng 2 fields
+    exam_score: Annotated[str | None, Form()] = None,
+    exam_max_score: Annotated[str | None, Form()] = None,
+    selected_questions: Annotated[str | None, Form()] = None,
+    raw_text: Annotated[str | None, Form()] = None,
+) -> ExamAnalysisDetail:
+    """
+    Nộp kết quả cuối cùng cho cả 2 luồng.
+    - mode='onboarding': kèm quick_quiz_results và selected_goal
+    - mode='post_exam':  kèm exam_score, exam_max_score, selected_questions, raw_text
+    """
+    filename = file.filename if file else "upload"
+    ext = os.path.splitext(filename)[1].lower() if file else ""
+    if file and ext not in ALL_SUPPORTED_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Định dạng '{ext}' không được hỗ trợ.",
+        )
+
+    file_bytes = await file.read() if file else b""
+    if file and not file_bytes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
 
     # Parse numeric fields
@@ -390,40 +441,66 @@ async def submit_exam(
     # Ensure learner profile
     learner = await ensure_learner_profile(session, current_user.id)
 
-    # OCR + parse file
-    try:
-        result = await run_full_exam_pipeline(
-            file_bytes=file_bytes,
-            filename=filename,
-            gemini_api_keys=settings.gemini_api_keys,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
-    except RuntimeError as e:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
-
-    parsed = result["parsed"]
-    resources = result.get("resources", {})
-    code_related = code_related or result.get("is_code_related", False)
+    # OCR + parse file (Luồng 1) hoặc parse từ raw_text (Luồng 2)
+    parsed = {}
+    resources = {}
+    if mode == "onboarding":
+        try:
+            result = await run_full_exam_pipeline(
+                file_bytes=file_bytes,
+                filename=filename,
+                gemini_api_keys=settings.gemini_api_keys,
+            )
+            parsed = result["parsed"]
+            resources = result.get("resources", {})
+            code_related = code_related or result.get("is_code_related", False)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)) from e
+    else:
+        # Luồng 2 (post_exam): parse từ raw_text
+        from app.services.exam_service import parse_exam_questions
+        if not raw_text:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Thiếu raw_text.")
+        parsed = parse_exam_questions(raw_text)
+        parsed["ocr_engine"] = "none"
+        parsed["filename"] = filename
 
     # AI Recommendation (Groq)
     ai_rec: dict = {}
     if settings.llm_api_key and settings.llm_model:
-        questions = parsed.get("questions", [])
-        question_texts = [
-            f"{q.get('id', '')}: {q.get('content', '')[:300]}"
-            for q in questions
-        ]
-        if question_texts:
+        if mode == "post_exam" and selected_questions:
+            try:
+                selected_qs = json.loads(selected_questions)
+            except Exception:
+                selected_qs = []
+            
             ai_rec = await get_ai_recommendation_groq(
-                questions=question_texts,
+                questions=selected_qs,  # Pass the list of dicts directly
                 score_ratio=score_ratio,
-                weak_areas=self_assessed_weak_areas,
+                weak_areas=None,
                 gemini_api_keys=settings.gemini_api_keys,
                 llm_api_keys=settings.llm_api_keys,
                 base_url=settings.llm_base_url,
                 model=settings.llm_model,
             )
+        elif mode == "onboarding":
+            questions = parsed.get("questions", [])
+            question_texts = [
+                f"{q.get('id', '')}: {q.get('content', '')[:300]}"
+                for q in questions
+            ]
+            if question_texts:
+                ai_rec = await get_ai_recommendation_groq(
+                    questions=question_texts,
+                    score_ratio=score_ratio,
+                    weak_areas=None,
+                    gemini_api_keys=settings.gemini_api_keys,
+                    llm_api_keys=settings.llm_api_keys,
+                    base_url=settings.llm_base_url,
+                    model=settings.llm_model,
+                )
 
     # Nếu có raw_text từ luồng 1 (đã analyze trước đó), dùng để crawl chính xác hơn
     crawl_query = raw_text_for_crawl or parsed.get("raw_markdown", "")[:500]
@@ -585,7 +662,6 @@ async def submit_exam(
         ocr_engine=analysis.ocr_engine,
         exam_score=score,
         exam_max_score=max_score,
-        self_assessed_weak_areas=self_assessed_weak_areas,
         questions=analysis.questions_json,
         raw_markdown=analysis.raw_markdown,
         ai_recommendation=analysis.ai_recommendation_json,
@@ -667,7 +743,6 @@ async def get_exam_analysis(
         ocr_engine=analysis.ocr_engine,
         exam_score=None,
         exam_max_score=None,
-        self_assessed_weak_areas=None,
         questions=analysis.questions_json,
         raw_markdown=analysis.raw_markdown,
         ai_recommendation=analysis.ai_recommendation_json,

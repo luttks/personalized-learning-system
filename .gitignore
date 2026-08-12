@@ -37,3 +37,19 @@ htmlcov/
 
 # Docs
 docs/
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Frontend extras
+build/
+.eslintcache
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Jupyter
+.ipynb_checkpoints/

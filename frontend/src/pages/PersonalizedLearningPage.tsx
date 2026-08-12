@@ -31,12 +31,14 @@ import {
   analyzeDocument,
   generateQuiz,
   submitExam,
+  parseExamDocument,
   type DocumentAnalysisResult,
   type ExamAnalysisDetail,
   type ExamRecommendation,
   type InlineRoadmap,
   type PhaseResources,
   type QuizQuestion,
+  type ParseExamResponse,
 } from "../api/exam";
 import { Button, PageHeader } from "../components/ui";
 
@@ -45,7 +47,7 @@ import { Button, PageHeader } from "../components/ui";
 // ──────────────────────────────────────────────────────────────────────────
 type Flow = "choose" | "onboarding" | "post_exam";
 type OnboardingStep = "upload_and_info" | "goal_selection" | "quiz" | "result";
-type PostExamStep = "upload" | "form" | "result";
+type PostExamStep = "upload" | "select_questions" | "support_levels" | "form" | "result";
 
 interface QuizAnswer {
   questionId: number;
@@ -177,9 +179,21 @@ function RecommendationPanel({ rec }: { rec: ExamRecommendation }) {
             {group.chi_tiet_tung_cau.length > 0 && (
               <div className="space-y-2">
                 {group.chi_tiet_tung_cau.map((q) => (
-                  <div key={q.id_cau} className="bg-white rounded-lg p-3 text-xs border border-white/60">
-                    <p className="font-medium text-slate-800">{q.id_cau} — {q.kien_thuc_can_hoc}</p>
-                    <p className="text-slate-600 mt-0.5">{q.loi_khuyen_ngan}</p>
+                  <div key={q.id_cau} className="bg-white rounded-lg p-3 text-xs border border-white/60 space-y-2">
+                    <div>
+                      <p className="font-medium text-slate-800">{q.id_cau} — <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.kien_thuc_can_hoc}</Markdown></p>
+                      <div className="text-slate-600 mt-0.5 prose prose-sm max-w-none">
+                        <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.loi_khuyen_ngan}</Markdown>
+                      </div>
+                    </div>
+                    {q.mini_test_and_roadmap && (
+                      <div className="mt-2 p-3 bg-red-50 border border-red-100 rounded-md">
+                        <p className="font-semibold text-red-800 mb-1 flex items-center gap-1.5"><AlertCircle className="size-3.5" /> Bổ sung nền tảng gấp</p>
+                        <div className="prose prose-sm max-w-none text-slate-700">
+                          <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.mini_test_and_roadmap}</Markdown>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -729,7 +743,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
             </p>
             <div className="flex gap-3 justify-end">
               <Button
-                variant="outline"
+                variant="secondary"
                 onClick={() => {
                   setShowLevelWarning(false);
                   setFile(null); // Cancel and clear file
@@ -917,33 +931,62 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// ──────────────────────────────────────────────────────────────────────────
 // Flow 2: Post-Exam
 // ──────────────────────────────────────────────────────────────────────────
 function PostExamFlow({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<PostExamStep>("upload");
   const [file, setFile] = useState<File | null>(null);
-  const [hasTaken, setHasTaken] = useState<"yes" | "no" | "">("");
   const [score, setScore] = useState("");
   const [maxScore, setMaxScore] = useState("10");
-  const [weakAreas, setWeakAreas] = useState("");
+  
+  const [parsedExam, setParsedExam] = useState<ParseExamResponse | null>(null);
+  const [selectedQuestions, setSelectedQuestions] = useState<string[]>([]);
+  const [supportLevels, setSupportLevels] = useState<Record<string, string>>({});
+  
   const [result, setResult] = useState<ExamAnalysisDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const steps = ["Upload đề thi", "Thông tin kết quả", "Phân tích & Lộ trình"];
-  const stepIndex = { upload: 0, form: 1, result: 2 }[step];
+  const steps = ["Upload đề thi", "Chọn câu hỏi", "Mức độ hỗ trợ", "Điểm số", "Lộ trình"];
+  const stepIndex = { upload: 0, select_questions: 1, support_levels: 2, form: 3, result: 4 }[step];
 
-  async function handleAnalyze() {
+  async function handleParse() {
     if (!file) { setError("Vui lòng chọn file đề thi."); return; }
-    if (!hasTaken) { setError("Vui lòng cho biết bạn đã thi chưa."); return; }
     setLoading(true);
     setError("");
     try {
-      const data = await submitExam(file, {
+      const data = await parseExamDocument(file);
+      setParsedExam(data);
+      setStep("select_questions");
+    } catch (e) {
+      setError(getApiErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleAnalyze() {
+    if (!parsedExam) return;
+    setLoading(true);
+    setError("");
+    try {
+      // Build selected questions payload
+      const questionsPayload = selectedQuestions.map(qId => {
+        const qData = parsedExam.questions.find(q => q.id === qId);
+        return {
+          id: qId,
+          content: qData?.content || "",
+          level: supportLevels[qId] || "Không biết làm",
+        };
+      });
+
+      const data = await submitExam(file!, {
         mode: "post_exam",
-        examScore: hasTaken === "yes" && score ? score : undefined,
-        examMaxScore: hasTaken === "yes" && maxScore ? maxScore : undefined,
-        selfAssessedWeakAreas: weakAreas || undefined,
+        examScore: score || undefined,
+        examMaxScore: maxScore || undefined,
+        selectedQuestions: JSON.stringify(questionsPayload),
+        rawText: parsedExam.raw_markdown,
       });
       setResult(data);
       setStep("result");
@@ -953,6 +996,18 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
       setLoading(false);
     }
   }
+
+  const toggleQuestion = (id: string) => {
+    setSelectedQuestions(prev => 
+      prev.includes(id) ? prev.filter(q => q !== id) : [...prev, id]
+    );
+  };
+
+  const supportOptions = [
+    "Không biết làm",
+    "Hiểu đề nhưng không biết bắt đầu từ đâu",
+    "Sắp làm được rồi nhưng vẫn còn thiếu một chút"
+  ];
 
   return (
     <div className="space-y-6">
@@ -982,60 +1037,134 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
         <div className="max-w-xl mx-auto space-y-4">
           <p className="text-slate-600 text-sm">Upload file đề thi hoặc bài kiểm tra bạn đã làm (ảnh scan, PDF, DOCX...).</p>
           <DropZone file={file} onFile={setFile} onClear={() => setFile(null)} accent="emerald" />
-          <Button className="w-full" onClick={() => setStep("form")} disabled={!file}>
-            Tiếp theo <ChevronRight className="size-4" />
+          <Button className="w-full" onClick={handleParse} isLoading={loading} disabled={!file}>
+            {loading ? "Đang xử lý tài liệu..." : <><ChevronRight className="size-4" /> Tiếp theo</>}
           </Button>
+        </div>
+      )}
+
+      {step === "select_questions" && parsedExam && (
+        <div className="max-w-3xl mx-auto space-y-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+            <h3 className="font-bold text-slate-800 text-lg">Chọn câu hỏi cần hỗ trợ</h3>
+            <p className="text-sm text-slate-500">
+              Dưới đây là các câu hỏi hệ thống đã nhận diện được. Hãy chọn những câu bạn làm sai hoặc không chắc chắn để AI phân tích.
+            </p>
+            
+            {parsedExam.header && parsedExam.header.trim().length > 0 && (
+              <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-sm mb-4">
+                <p className="font-semibold text-slate-700 mb-2">Đoạn văn / Dữ kiện chung:</p>
+                <div className="prose prose-sm max-w-none text-slate-600">
+                  <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{parsedExam.header}</Markdown>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
+              {parsedExam.questions.map((q) => (
+                <div 
+                  key={q.id} 
+                  className={`flex items-start gap-3 p-4 rounded-xl border transition-colors cursor-pointer ${
+                    selectedQuestions.includes(q.id) ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-emerald-300"
+                  }`}
+                  onClick={() => toggleQuestion(q.id)}
+                >
+                  <div className="mt-1 flex-shrink-0">
+                    <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
+                      selectedQuestions.includes(q.id) ? "bg-emerald-500 border-emerald-500" : "border-slate-300"
+                    }`}>
+                      {selectedQuestions.includes(q.id) && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0 prose prose-sm max-w-none text-slate-800">
+                    <p className="font-bold mb-1">{q.id}</p>
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.content}</Markdown>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button variant="secondary" onClick={() => setStep("upload")}>Quay lại</Button>
+            <Button className="flex-1" onClick={() => setStep("support_levels")} disabled={selectedQuestions.length === 0}>
+              Kế tiếp <ChevronRight className="size-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === "support_levels" && parsedExam && (
+        <div className="max-w-3xl mx-auto space-y-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-5">
+            <h3 className="font-bold text-slate-800 text-lg">Mức độ hỗ trợ</h3>
+            <p className="text-sm text-slate-500">
+              Với mỗi câu đã chọn, hãy cho biết bạn đang gặp khó khăn ở mức độ nào để AI có thể tư vấn tốt nhất.
+            </p>
+
+            <div className="space-y-4">
+              {selectedQuestions.map(qId => {
+                const qData = parsedExam.questions.find(q => q.id === qId);
+                return (
+                  <div key={qId} className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/30">
+                    <div className="mb-3 prose prose-sm max-w-none text-slate-700">
+                      <p className="font-bold text-emerald-800">{qId}</p>
+                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{qData?.content || ""}</Markdown>
+                    </div>
+                    <div className="space-y-2">
+                      {supportOptions.map(opt => (
+                        <label key={opt} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                          supportLevels[qId] === opt ? "border-emerald-500 bg-white shadow-sm ring-1 ring-emerald-500" : "border-slate-200 bg-white/50 hover:bg-white"
+                        }`}>
+                          <input 
+                            type="radio" 
+                            name={`level-${qId}`} 
+                            className="text-emerald-600 focus:ring-emerald-500"
+                            checked={supportLevels[qId] === opt}
+                            onChange={() => setSupportLevels(prev => ({ ...prev, [qId]: opt }))}
+                          />
+                          <span className="text-sm font-medium text-slate-700">{opt}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <Button variant="secondary" onClick={() => setStep("select_questions")}>Quay lại</Button>
+            <Button className="flex-1" onClick={() => setStep("form")} disabled={selectedQuestions.some(q => !supportLevels[q])}>
+              Kế tiếp <ChevronRight className="size-4" />
+            </Button>
+          </div>
         </div>
       )}
 
       {step === "form" && (
         <div className="max-w-xl mx-auto space-y-5">
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
-            <div>
-              <p className="text-sm font-semibold text-slate-700 mb-2">Bạn đã thi xong chưa? <span className="text-red-500">*</span></p>
-              <div className="flex gap-3">
-                {[
-                  { val: "yes", label: "✅ Đã thi xong" },
-                  { val: "no", label: "📚 Chưa, đang ôn" },
-                ].map(({ val, label }) => (
-                  <button key={val} onClick={() => setHasTaken(val as "yes" | "no")}
-                    className={`flex-1 rounded-xl border-2 p-3 text-sm font-medium transition-all
-                      ${hasTaken === val ? "border-emerald-500 bg-emerald-50 text-emerald-800" : "border-slate-200 hover:border-emerald-200"}`}>
-                    {label}
-                  </button>
-                ))}
-              </div>
+            <h3 className="font-bold text-slate-800 text-lg mb-4">Điểm số bài làm</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">Điểm của bạn</span>
+                <input type="number" min="0" step="0.5"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  placeholder="VD: 6.5" value={score} onChange={(e) => setScore(e.target.value)} />
+              </label>
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">Thang điểm</span>
+                <input type="number" min="1"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  placeholder="VD: 10" value={maxScore} onChange={(e) => setMaxScore(e.target.value)} />
+              </label>
             </div>
-
-            {hasTaken === "yes" && (
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">Điểm của bạn</span>
-                  <input type="number" min="0" step="0.5"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                    placeholder="VD: 6.5" value={score} onChange={(e) => setScore(e.target.value)} />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-semibold text-slate-700">Thang điểm</span>
-                  <input type="number" min="1"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400"
-                    placeholder="VD: 10" value={maxScore} onChange={(e) => setMaxScore(e.target.value)} />
-                </label>
-              </div>
-            )}
-
-            <label className="block">
-              <span className="text-sm font-semibold text-slate-700">Bạn thấy mình yếu phần nào?</span>
-              <textarea
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 min-h-[70px]"
-                placeholder="VD: Không làm được phần tích phân, hay nhầm dấu... (để trống nếu không biết)"
-                value={weakAreas} onChange={(e) => setWeakAreas(e.target.value)} />
-            </label>
           </div>
 
           <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setStep("upload")}>Quay lại</Button>
-            <Button onClick={handleAnalyze} isLoading={loading} className="flex-1" disabled={!hasTaken}>
+            <Button variant="secondary" onClick={() => setStep("support_levels")}>Quay lại</Button>
+            <Button onClick={handleAnalyze} isLoading={loading} className="flex-1">
               {loading ? "Đang phân tích và sinh lộ trình..." : <><BrainCircuit className="size-4" /> Phân tích AI</>}
             </Button>
           </div>
@@ -1046,3 +1175,4 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
     </div>
   );
 }
+
