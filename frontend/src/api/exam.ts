@@ -7,6 +7,8 @@ import { apiClient } from "./client";
 export interface DocumentAnalysisResult {
   is_learning_doc: boolean;
   subject: string;
+  subjects: string[];                  // Danh sách môn khi upload nhiều file
+  multi_subject_detected: boolean;     // True nếu phát hiện > 1 môn
   topics: string[];
   suggested_goals: string[];
   content_summary: string;
@@ -17,6 +19,13 @@ export interface DocumentAnalysisResult {
   document_level: number | null;
   level_gap: "exceeds_user" | "below_user" | "match" | null;
   warning_message: string | null;
+  has_existing_mastery: boolean;       // Đã có mastery cho môn này
+  existing_roadmap_title: string | null; // Tên lộ trình đang học cùng môn
+  // Phát hiện file trùng lập
+  duplicate_file: boolean;             // True nếu file này đã tồn tại trong kho
+  existing_analysis_id: string | null; // ID phân tích trước có cùng hash
+  duplicate_subject: string | null;    // Tên môn của phân tích trước
+  duplicate_created_at: string | null; // Ngày tạo phân tích trước
 }
 
 export interface QuizQuestion {
@@ -119,9 +128,21 @@ export interface PhaseResources {
   github_repos: GitHubRepo[];
 }
 
+/** Kết quả xử lý từng câu theo phương án (post_exam) */
+export interface SolutionResult {
+  question_id: string;
+  question_content: string;
+  support_level: string;
+  hint: string;
+  traps: string;
+  tips: string;
+  crawled_solutions: WebExercise[];
+}
+
 export interface ExamAnalysisDetail {
   id: string;
   filename: string;
+  subject: string | null;
   mode: "onboarding" | "post_exam";
   question_count: number;
   formula_count: number;
@@ -136,12 +157,15 @@ export interface ExamAnalysisDetail {
   mastery_updates: MasteryUpdate[];
   roadmap: InlineRoadmap | null;
   phase_resources: Record<string, PhaseResources>;
+  roadmap_error: string | null;         // Lỗi nếu sinh lộ trình thất bại
+  solution_results: SolutionResult[];   // Per-question results for post_exam
   created_at: string;
 }
 
 export interface ExamAnalysisSummary {
   id: string;
   filename: string;
+  subject: string | null;
   mode: string;
   question_count: number;
   formula_count: number;
@@ -162,19 +186,27 @@ export interface ParseExamResponse {
   filename: string;
 }
 
+export interface SubjectSummary {
+  subject: string;
+  mode: string;
+  count: number;
+  last_used: string;
+}
+
 // ---------------------------------------------------------------------------
 // API calls
 // ---------------------------------------------------------------------------
 
 /**
- * Luồng 1 — Bước 1: Upload tài liệu + thông tin cá nhân
- * Backend sẽ detect môn học và trả về gợi ý mục tiêu
+ * Luồng 1 — Bước 1: Upload tài liệu (hỗ trợ nhiều file)
+ * Backend sẽ detect môn học và trả về gợi ý mục tiêu + kiểm tra lịch sử mastery
  */
 export async function analyzeDocument(
-  file: File
+  files: File | File[]
 ): Promise<DocumentAnalysisResult> {
   const formData = new FormData();
-  formData.append("file", file);
+  const fileList = Array.isArray(files) ? files : [files];
+  fileList.forEach((f) => formData.append("files", f));
 
   const response = await apiClient.post<DocumentAnalysisResult>(
     "/learners/me/exams/analyze-document",
@@ -209,8 +241,8 @@ export async function generateQuiz(payload: {
   document_text: string;
   selected_goal: string;
   num_questions?: number;
-}): Promise<{ quiz: QuizQuestion[]; topic_summary: string }> {
-  const response = await apiClient.post<{ quiz: QuizQuestion[]; topic_summary: string }>(
+}): Promise<{ quiz: QuizQuestion[]; topic_summary: string; quiz_skipped: boolean }> {
+  const response = await apiClient.post<{ quiz: QuizQuestion[]; topic_summary: string; quiz_skipped: boolean }>(
     "/learners/me/exams/generate-quiz",
     payload
   );
@@ -218,7 +250,8 @@ export async function generateQuiz(payload: {
 }
 
 /**
- * Luồng 1 — Bước 3 / Luồng 2: Nộp kết quả
+ * Luồng 1 Bước 3 / Luồng 2 Bước 2: Nộp kết quả
+ * Post-exam: điểm số đã được gộp vào cùng payload, không cần bước riêng
  */
 export async function submitExam(
   file: File,
@@ -230,7 +263,7 @@ export async function submitExam(
     subject?: string;
     rawTextForCrawl?: string;
     isCodeRelated?: boolean;
-    // Luồng 2
+    // Luồng 2 (điểm số gộp vào bước 2 chọn câu)
     examScore?: string;
     examMaxScore?: string;
     selectedQuestions?: string;
@@ -262,6 +295,23 @@ export async function submitExam(
 // Backward compat alias (Luồng 2)
 export const uploadExam = (file: File, opts: Parameters<typeof submitExam>[1]) =>
   submitExam(file, opts);
+
+/** Lấy danh sách môn học / đề thi đã làm theo mode */
+export async function listSubjects(mode: "onboarding" | "post_exam" = "onboarding"): Promise<SubjectSummary[]> {
+  const response = await apiClient.get<SubjectSummary[]>("/learners/me/exams/subjects", {
+    params: { mode },
+  });
+  return response.data;
+}
+
+/** Lấy danh sách analyses theo môn học */
+export async function listAnalysesBySubject(subject: string, limit = 20): Promise<ExamAnalysisSummary[]> {
+  const response = await apiClient.get<ExamAnalysisSummary[]>(
+    `/learners/me/exams/subjects/${encodeURIComponent(subject)}/analyses`,
+    { params: { limit } }
+  );
+  return response.data;
+}
 
 export async function listExamAnalyses(limit = 20, offset = 0): Promise<ExamAnalysisSummary[]> {
   const response = await apiClient.get<ExamAnalysisSummary[]>("/learners/me/exams", {

@@ -11,17 +11,22 @@ import {
   ExternalLink,
   FileText,
   Flag,
-  GraduationCap,
   Layers,
+  Lightbulb,
   Loader2,
   Mail,
+  Plus,
   PlaySquare,
+  ShieldAlert,
+  Link2,
   Target,
   Trophy,
   Upload,
   X,
+  Zap,
+  History,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -32,22 +37,26 @@ import {
   generateQuiz,
   submitExam,
   parseExamDocument,
+  listSubjects,
+  listAnalysesBySubject,
+  getExamAnalysis,
   type DocumentAnalysisResult,
   type ExamAnalysisDetail,
+  type ExamAnalysisSummary,
   type ExamRecommendation,
   type InlineRoadmap,
   type PhaseResources,
   type QuizQuestion,
   type ParseExamResponse,
+  type SubjectSummary,
 } from "../api/exam";
-import { Button, PageHeader } from "../components/ui";
+import { Button } from "../components/ui";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────────────────────────
-type Flow = "choose" | "onboarding" | "post_exam";
-type OnboardingStep = "upload_and_info" | "goal_selection" | "quiz" | "result";
-type PostExamStep = "upload" | "select_questions" | "support_levels" | "form" | "result";
+type OnboardingScreen = "subject_list" | "upload_and_info" | "goal_selection" | "quiz" | "result";
+type PostExamScreen = "exam_list" | "upload" | "select_and_score" | "result";
 
 interface QuizAnswer {
   questionId: number;
@@ -58,34 +67,114 @@ interface QuizAnswer {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Shared Helper Components
+// Progress Bar (thay StepIndicator)
 // ──────────────────────────────────────────────────────────────────────────
-
-function StepIndicator({ steps, current }: { steps: string[]; current: number }) {
+function ProgressBar({ progress, label }: { progress: number; label?: string }) {
   return (
-    <div className="flex items-center mb-8 mx-auto max-w-2xl">
-      {steps.map((label, i) => (
-        <div key={label} className="flex items-center flex-1 last:flex-none">
-          <div className="flex flex-col items-center">
-            <div
-              className={`size-8 rounded-full flex items-center justify-center text-sm font-bold transition-all
-                ${i < current ? "bg-emerald-500 text-white" : i === current ? "bg-indigo-600 text-white ring-4 ring-indigo-100" : "bg-slate-200 text-slate-500"}`}
-            >
-              {i < current ? <CheckCircle2 className="size-4" /> : i + 1}
-            </div>
-            <span className={`mt-1 text-xs font-medium whitespace-nowrap ${i === current ? "text-indigo-700" : "text-slate-500"}`}>
-              {label}
-            </span>
-          </div>
-          {i < steps.length - 1 && (
-            <div className={`h-0.5 flex-1 mx-2 mb-4 ${i < current ? "bg-emerald-400" : "bg-slate-200"}`} />
-          )}
-        </div>
-      ))}
+    <div className="mb-8">
+      <div className="flex items-center justify-between mb-2">
+        {label && <span className="text-xs font-medium text-slate-500">{label}</span>}
+        <span className="text-xs font-bold text-indigo-600 ml-auto">{Math.round(progress)}%</span>
+      </div>
+      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+        <div
+          className="h-full rounded-full transition-all duration-700 ease-out"
+          style={{
+            width: `${progress}%`,
+            background: "linear-gradient(90deg, #6366f1 0%, #818cf8 60%, #a5b4fc 100%)",
+          }}
+        />
+      </div>
     </div>
   );
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Multi-file DropZone
+// ──────────────────────────────────────────────────────────────────────────
+function MultiDropZone({
+  files,
+  onFiles,
+  onRemove,
+  accent = "indigo",
+}: {
+  files: File[];
+  onFiles: (f: File[]) => void;
+  onRemove: (index: number) => void;
+  accent?: "indigo" | "emerald";
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const color = accent;
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const dropped = Array.from(e.dataTransfer.files);
+      if (dropped.length) onFiles(dropped);
+    },
+    [onFiles]
+  );
+
+  return (
+    <div className="space-y-2">
+      {files.length > 0 && (
+        <div className="space-y-2">
+          {files.map((f, i) => (
+            <div
+              key={i}
+              className={`flex items-center gap-3 rounded-xl border-2 border-${color}-200 bg-${color}-50 px-4 py-3`}
+            >
+              <FileText className={`size-5 text-${color}-600 shrink-0`} />
+              <div className="min-w-0 flex-1">
+                <p className={`text-sm font-semibold text-${color}-900 truncate`}>{f.name}</p>
+                <p className="text-xs text-slate-500">{(f.size / 1024).toFixed(0)} KB</p>
+              </div>
+              <button
+                onClick={() => onRemove(i)}
+                className="shrink-0 text-slate-400 hover:text-red-500 transition-colors"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div
+        className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all
+          ${dragging ? `border-${color}-400 bg-${color}-50` : "border-slate-300 hover:border-indigo-300 hover:bg-slate-50"}`}
+        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={handleDrop}
+        onClick={() => inputRef.current?.click()}
+      >
+        <Upload className="size-8 mx-auto text-slate-400 mb-2" />
+        <p className="font-semibold text-slate-700 text-sm">
+          {files.length > 0 ? "Thêm file khác" : "Kéo thả file hoặc nhấn để chọn"}
+        </p>
+        <p className="text-xs text-slate-500 mt-1">PDF, DOCX, TXT, JPG, PNG — có thể chọn nhiều file cùng lúc</p>
+        <input
+          ref={inputRef}
+          type="file"
+          className="hidden"
+          multiple
+          accept=".pdf,.jpg,.jpeg,.png,.docx,.txt,.html"
+          onChange={(e) => {
+            const selected = Array.from(e.target.files || []);
+            if (selected.length) onFiles(selected);
+            e.target.value = "";
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Single file DropZone (for post exam)
+// ──────────────────────────────────────────────────────────────────────────
 function DropZone({
   file,
   onFile,
@@ -99,7 +188,7 @@ function DropZone({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const color = accent === "indigo" ? "indigo" : "emerald";
+  const color = accent;
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -149,6 +238,9 @@ function DropZone({
   );
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Recommendation Panel
+// ──────────────────────────────────────────────────────────────────────────
 function RecommendationPanel({ rec }: { rec: ExamRecommendation }) {
   const groups = [
     { key: "nhom_co_ban" as const, label: "Kiến thức cơ bản", color: "emerald" },
@@ -206,9 +298,8 @@ function RecommendationPanel({ rec }: { rec: ExamRecommendation }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Inline Roadmap Panel
+// Phase Resources Panel
 // ──────────────────────────────────────────────────────────────────────────
-
 const phaseColors = [
   { bg: "bg-indigo-50", border: "border-indigo-200", badge: "bg-indigo-600", text: "text-indigo-900", dot: "bg-indigo-500" },
   { bg: "bg-emerald-50", border: "border-emerald-200", badge: "bg-emerald-600", text: "text-emerald-900", dot: "bg-emerald-500" },
@@ -278,6 +369,76 @@ function PhaseResourcesPanel({ res }: { res: PhaseResources }) {
   );
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Inline Roadmap Panel
+// ──────────────────────────────────────────────────────────────────────────
+export function GlobalResourcesPanel({ res }: { res: ExamResources }) {
+  if (!res.youtube_tutorials?.length && !res.quiz_exercises?.length && !res.github_repos?.length) return null;
+  return (
+    <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+      <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+        <Link2 className="size-4 text-indigo-500" /> Tài liệu tham khảo tự động
+      </h3>
+      {res.youtube_tutorials?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
+            <PlaySquare className="size-3.5 text-red-500" /> Video học tập
+          </p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {res.youtube_tutorials.map((v) => (
+              <a key={v.video_id} href={v.watch_url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2 text-xs text-red-800 hover:border-red-300 transition-all group">
+                <PlaySquare className="size-3.5 shrink-0 text-red-500" />
+                <span className="truncate font-medium group-hover:underline">{v.title}</span>
+                <span className="text-red-400 text-xs shrink-0 ml-auto">{v.channel_title}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+      {res.quiz_exercises?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
+            <BookOpen className="size-3.5 text-amber-500" /> Bài tập & Web
+          </p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {res.quiz_exercises.map((ex) => (
+              <a key={ex.url} href={ex.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-100 px-3 py-2 text-xs text-amber-900 hover:border-amber-300 transition-all group">
+                <ExternalLink className="size-3.5 shrink-0 mt-0.5 text-amber-500" />
+                <div className="min-w-0">
+                  <p className="font-medium group-hover:underline truncate">{ex.title}</p>
+                  {ex.snippet && <p className="text-amber-700 text-xs line-clamp-1 mt-0.5">{ex.snippet}</p>}
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+      {res.github_repos?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
+            <Code className="size-3.5 text-slate-600" /> GitHub
+          </p>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {res.github_repos.map((r) => (
+              <a key={r.url} href={r.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:border-slate-400 transition-all">
+                <Code className="size-3.5 shrink-0 text-slate-500" />
+                <span className="truncate font-medium">{r.full_name}</span>
+                <span className="ml-auto shrink-0 text-amber-600">★ {r.stars.toLocaleString()}</span>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Inline Roadmap Panel
+// ──────────────────────────────────────────────────────────────────────────
 export function RoadmapInlinePanel({
   roadmap,
   phaseResources,
@@ -292,7 +453,6 @@ export function RoadmapInlinePanel({
   const [expandedPhase, setExpandedPhase] = useState<number | null>(0);
   const [applied, setApplied] = useState(false);
 
-  // Build mailto email body
   function handleEmail() {
     const lines = [
       `LỘ TRÌNH HỌC TẬP: ${subject}`,
@@ -315,7 +475,6 @@ export function RoadmapInlinePanel({
     window.open(`mailto:?subject=${subject_enc}&body=${body}`);
   }
 
-  // Build Google Calendar link for each phase
   function gcalLink(phase: (typeof roadmap.phases)[0], index: number) {
     const startOffset = roadmap.phases.slice(0, index).reduce((s, p) => s + p.duration_weeks * 7, 0);
     const start = new Date();
@@ -330,7 +489,6 @@ export function RoadmapInlinePanel({
 
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-indigo-800 p-5 text-white">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -344,8 +502,6 @@ export function RoadmapInlinePanel({
             <p className="text-xs text-indigo-200">tuần</p>
           </div>
         </div>
-
-        {/* Action buttons */}
         <div className="flex gap-2 mt-4">
           <button
             onClick={handleEmail}
@@ -363,7 +519,6 @@ export function RoadmapInlinePanel({
         </div>
       </div>
 
-      {/* Phases */}
       <div className="space-y-3">
         {roadmap.phases.map((phase, i) => {
           const c = phaseColors[i % phaseColors.length];
@@ -373,7 +528,6 @@ export function RoadmapInlinePanel({
 
           return (
             <div key={phase.phase_number} className={`rounded-2xl border-2 ${c.border} ${c.bg} overflow-hidden transition-all`}>
-              {/* Phase header */}
               <button
                 className="w-full flex items-center gap-3 p-4 text-left"
                 onClick={() => setExpandedPhase(isOpen ? null : i)}
@@ -400,41 +554,28 @@ export function RoadmapInlinePanel({
                   <ChevronRight className={`size-4 text-slate-400 transition-transform ${isOpen ? "rotate-90" : ""}`} />
                 </div>
               </button>
-
-              {/* Phase detail */}
               {isOpen && (
                 <div className="px-4 pb-4 space-y-4 border-t border-white/40 pt-3">
                   <div className="rounded-xl bg-white/70 p-3 text-sm">
-                    <p className="font-semibold text-slate-800 mb-1 flex items-center gap-2">
-                      <Target className="size-3.5 text-indigo-500" /> Mục tiêu
-                    </p>
+                    <p className="font-semibold text-slate-800 mb-1 flex items-center gap-2"><Target className="size-3.5 text-indigo-500" /> Mục tiêu</p>
                     <p className="text-slate-700">{phase.goal}</p>
                   </div>
-
                   <div>
-                    <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
-                      <Layers className="size-3.5" /> Chủ đề cần học
-                    </p>
+                    <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5"><Layers className="size-3.5" /> Chủ đề cần học</p>
                     <div className="flex flex-wrap gap-1.5">
                       {phase.topics.map((t) => (
-                        <span key={t} className="rounded-full bg-white border border-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-700">
-                          {t}
-                        </span>
+                        <span key={t} className="rounded-full bg-white border border-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-700">{t}</span>
                       ))}
                     </div>
                   </div>
-
                   <div className="rounded-xl bg-white/70 p-3 text-sm">
                     <p className="font-semibold text-slate-800 mb-1">📅 Kế hoạch hàng ngày</p>
                     <p className="text-slate-700">{phase.daily_plan}</p>
                   </div>
-
                   <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-sm">
                     <p className="font-semibold text-emerald-800 mb-0.5">🏁 Cột mốc</p>
                     <p className="text-emerald-700">{phase.milestone}</p>
                   </div>
-
-                  {/* Per-phase resources */}
                   {phaseRes && <PhaseResourcesPanel res={phaseRes} />}
                 </div>
               )}
@@ -447,18 +588,23 @@ export function RoadmapInlinePanel({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Result Panel (wraps AI rec + roadmap)
+// Result Panel (wraps AI rec + roadmap — luồng 1)
 // ──────────────────────────────────────────────────────────────────────────
 function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
   const [tab, setTab] = useState<"roadmap" | "rec">("roadmap");
   const hasRec = Object.keys(result.ai_recommendation).filter((k) => !k.startsWith("_")).length > 0;
   const hasRoadmap = result.roadmap && result.roadmap.phases?.length > 0;
-  const subject = result.ai_recommendation?.["_goal"] ? result.filename.replace(/\.[^.]+$/, "") : "Học tập";
+  const subject = result.subject || result.ai_recommendation?.["_goal"] ? (result.subject || result.filename.replace(/\.[^.]+$/, "")) : "Học tập";
   const goal = (result.ai_recommendation?.["_goal"] as string) || "Nắm vững kiến thức";
 
   return (
     <div className="space-y-5 max-w-3xl mx-auto">
-      {/* Score summary */}
+      {result.roadmap_error && (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-500" />
+          <p>{result.roadmap_error}</p>
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-xs text-slate-500 mb-1">Câu hỏi phân tích</p>
@@ -471,14 +617,11 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
         {result.exam_score !== null && (
           <div className="rounded-xl border border-slate-200 bg-white p-4">
             <p className="text-xs text-slate-500 mb-1">Điểm số</p>
-            <p className="text-2xl font-black text-indigo-700">
-              {result.exam_score}/{result.exam_max_score}
-            </p>
+            <p className="text-2xl font-black text-indigo-700">{result.exam_score}/{result.exam_max_score}</p>
           </div>
         )}
       </div>
 
-      {/* Tabs */}
       <div className="flex border-b border-slate-200 gap-1">
         {hasRoadmap && (
           <button
@@ -509,6 +652,374 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
         />
       )}
       {tab === "rec" && hasRec && <RecommendationPanel rec={result.ai_recommendation} />}
+
+      {/* Crawled Resources (Global) */}
+      {result.resources && <GlobalResourcesPanel res={result.resources} />}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Post-Exam Result Panel
+// ──────────────────────────────────────────────────────────────────────────
+function PostExamResultPanel({ result }: { result: ExamAnalysisDetail }) {
+  const solutionResults = result.solution_results || [];
+  const level1 = solutionResults.filter((s) => s.support_level === "Hiểu đề nhưng không biết bắt đầu từ đâu");
+  const level2 = solutionResults.filter((s) => s.support_level === "Sắp làm được rồi nhưng vẫn còn thiếu một chút");
+  const level3 = solutionResults.filter((s) => s.support_level === "Không biết làm");
+  const hasRoadmap = result.roadmap && result.roadmap.phases?.length > 0;
+  const subject = result.subject || "Học tập";
+
+  return (
+    <div className="space-y-6 max-w-3xl mx-auto">
+      {result.roadmap_error && (
+        <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+          <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-500" />
+          <p>{result.roadmap_error}</p>
+        </div>
+      )}
+      {/* Score summary */}
+      {result.exam_score !== null && (
+        <div className="rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 p-5 text-white text-center">
+          <p className="text-emerald-200 text-xs font-semibold uppercase tracking-wider mb-1">Điểm số bài thi</p>
+          <p className="text-5xl font-black">{result.exam_score}</p>
+          <p className="text-emerald-200 text-sm mt-1">/ {result.exam_max_score} điểm</p>
+        </div>
+      )}
+
+      {/* Level 1: Hiểu đề nhưng không biết làm */}
+      {level1.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="size-8 rounded-full bg-amber-100 flex items-center justify-center">
+              <Lightbulb className="size-4 text-amber-600" />
+            </div>
+            <h3 className="font-bold text-slate-800">Hiểu đề nhưng không biết bắt đầu từ đâu</h3>
+            <span className="ml-auto text-xs bg-amber-100 text-amber-700 rounded-full px-2 py-0.5 font-medium">{level1.length} câu</span>
+          </div>
+          {level1.map((s) => (
+            <div key={s.question_id} className="rounded-2xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+              <div className="text-sm font-bold text-amber-900">{s.question_id}</div>
+              <div className="text-xs text-slate-600 prose prose-sm max-w-none">
+                <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.question_content}</Markdown>
+              </div>
+              {s.hint && (
+                <div className="rounded-xl bg-white border border-amber-200 p-3 space-y-1.5">
+                  <p className="text-xs font-semibold text-amber-800 flex items-center gap-1.5"><Zap className="size-3.5" /> Hướng tiếp cận</p>
+                  <div className="text-xs text-slate-700 prose prose-sm max-w-none">
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.hint}</Markdown>
+                  </div>
+                </div>
+              )}
+              {s.tips && (
+                <div className="rounded-xl bg-white border border-amber-200 p-3">
+                  <p className="text-xs font-semibold text-amber-800 mb-1">💡 Lời khuyên</p>
+                  <div className="text-xs text-slate-700 prose prose-sm max-w-none">
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.tips}</Markdown>
+                  </div>
+                </div>
+              )}
+              {s.crawled_solutions.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 mb-1.5 flex items-center gap-1.5">
+                    <ExternalLink className="size-3.5" /> Lời giải tham khảo
+                  </p>
+                  <div className="space-y-1.5">
+                    {s.crawled_solutions.map((sol) => (
+                      <a key={sol.url} href={sol.url} target="_blank" rel="noopener noreferrer"
+                        className="flex items-start gap-2 rounded-lg bg-white border border-amber-200 px-3 py-2 text-xs hover:border-amber-400 transition-all group">
+                        <ExternalLink className="size-3.5 shrink-0 mt-0.5 text-amber-500" />
+                        <div className="min-w-0">
+                          <p className="font-medium group-hover:underline truncate text-amber-900">{sol.title}</p>
+                          {sol.snippet && <p className="text-slate-500 line-clamp-1 mt-0.5">{sol.snippet}</p>}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Level 2: Sắp làm được rồi */}
+      {level2.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="size-8 rounded-full bg-blue-100 flex items-center justify-center">
+              <Target className="size-4 text-blue-600" />
+            </div>
+            <h3 className="font-bold text-slate-800">Sắp làm được rồi</h3>
+            <span className="ml-auto text-xs bg-blue-100 text-blue-700 rounded-full px-2 py-0.5 font-medium">{level2.length} câu</span>
+          </div>
+          {level2.map((s) => (
+            <div key={s.question_id} className="rounded-2xl border border-blue-200 bg-blue-50 p-4 space-y-3">
+              <div className="text-sm font-bold text-blue-900">{s.question_id}</div>
+              <div className="text-xs text-slate-600 prose prose-sm max-w-none">
+                <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.question_content}</Markdown>
+              </div>
+              {s.hint && (
+                <div className="rounded-xl bg-white border border-blue-200 p-3 space-y-1.5">
+                  <p className="text-xs font-semibold text-blue-800 flex items-center gap-1.5"><Zap className="size-3.5" /> Hướng giải quyết</p>
+                  <div className="text-xs text-slate-700 prose prose-sm max-w-none">
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.hint}</Markdown>
+                  </div>
+                </div>
+              )}
+              {s.traps && (
+                <div className="rounded-xl bg-red-50 border border-red-200 p-3">
+                  <p className="text-xs font-semibold text-red-800 mb-1 flex items-center gap-1.5"><ShieldAlert className="size-3.5" /> Bẫy cần tránh</p>
+                  <div className="text-xs text-red-700 prose prose-sm max-w-none">
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.traps}</Markdown>
+                  </div>
+                </div>
+              )}
+              {s.tips && (
+                <div className="rounded-xl bg-white border border-blue-200 p-3">
+                  <p className="text-xs font-semibold text-blue-800 mb-1">💡 Mẹo giải nhanh</p>
+                  <div className="text-xs text-slate-700 prose prose-sm max-w-none">
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.tips}</Markdown>
+                  </div>
+                </div>
+              )}
+              {s.crawled_solutions.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-500 mb-1.5 flex items-center gap-1.5">
+                    <ExternalLink className="size-3.5" /> Lời giải tham khảo
+                  </p>
+                  <div className="space-y-1.5">
+                    {s.crawled_solutions.map((sol) => (
+                      <a key={sol.url} href={sol.url} target="_blank" rel="noopener noreferrer"
+                        className="flex items-start gap-2 rounded-lg bg-white border border-blue-200 px-3 py-2 text-xs hover:border-blue-400 transition-all group">
+                        <ExternalLink className="size-3.5 shrink-0 mt-0.5 text-blue-500" />
+                        <div className="min-w-0">
+                          <p className="font-medium group-hover:underline truncate text-blue-900">{sol.title}</p>
+                          {sol.snippet && <p className="text-slate-500 line-clamp-1 mt-0.5">{sol.snippet}</p>}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Level 3: Không biết làm → Lộ trình */}
+      {level3.length > 0 && (
+        <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="size-8 rounded-full bg-red-100 flex items-center justify-center">
+              <AlertCircle className="size-4 text-red-600" />
+            </div>
+            <h3 className="font-bold text-slate-800">Không biết làm — Cần học lại</h3>
+            <span className="ml-auto text-xs bg-red-100 text-red-700 rounded-full px-2 py-0.5 font-medium">{level3.length} câu</span>
+          </div>
+          <div className="space-y-2 mb-4">
+            {level3.map((s) => (
+              <div key={s.question_id} className="bg-white rounded-xl border border-red-200 p-3">
+                <p className="text-xs font-bold text-red-800 mb-1">{s.question_id}</p>
+                <div className="text-xs text-slate-600 prose prose-sm max-w-none">
+                  <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.question_content}</Markdown>
+                </div>
+                {s.hint && (
+                  <div className="mt-3 rounded-xl bg-red-50 border border-red-200 p-3">
+                    <p className="text-xs font-semibold text-red-800 mb-1">💡 Lời khuyên & Đánh giá</p>
+                    <div className="text-xs text-slate-700 prose prose-sm max-w-none">
+                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{s.hint}</Markdown>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          {hasRoadmap && (
+            <div className="mt-4">
+              <p className="text-sm font-semibold text-red-800 mb-3">📚 Lộ trình học lại được tạo riêng cho bạn:</p>
+              <RoadmapInlinePanel
+                roadmap={result.roadmap!}
+                phaseResources={result.phase_resources ?? {}}
+                subject={subject}
+                goal="Nắm vững kiến thức còn yếu"
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Crawled Resources (Global) */}
+      {result.resources && <GlobalResourcesPanel res={result.resources} />}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Subject List (màn đầu luồng 1)
+// ──────────────────────────────────────────────────────────────────────────
+function SubjectListScreen({
+  mode,
+  onNew,
+  onBack,
+  onViewSubject,
+}: {
+  mode: "onboarding" | "post_exam";
+  onNew: () => void;
+  onBack: () => void;
+  onViewSubject: (subject: string) => void;
+}) {
+  const [subjects, setSubjects] = useState<SubjectSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const color = mode === "onboarding" ? "indigo" : "emerald";
+
+  useEffect(() => {
+    setLoading(true);
+    listSubjects(mode)
+      .then(setSubjects)
+      .catch(() => setSubjects([]))
+      .finally(() => setLoading(false));
+  }, [mode]);
+
+  const title = mode === "onboarding" ? "Bắt đầu học mới" : "Cải thiện sau thi";
+  const emptyText = mode === "onboarding"
+    ? "Bạn chưa có môn học nào. Hãy thêm môn mới để bắt đầu!"
+    : "Bạn chưa có bài kiểm tra nào. Hãy thêm để bắt đầu phân tích!";
+  const itemLabel = mode === "onboarding" ? "môn học" : "bài kiểm tra";
+  const newLabel = mode === "onboarding" ? "+ Thêm môn học mới" : "+ Thêm bài kiểm tra mới";
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="text-slate-500 hover:text-slate-800 transition-colors p-1">
+          <X className="size-5" />
+        </button>
+        <div className="flex-1">
+          <h2 className="font-bold text-slate-900 text-xl">{title}</h2>
+          <p className="text-sm text-slate-500">
+            {mode === "onboarding"
+              ? "Xem lại các môn đã học hoặc bắt đầu môn mới."
+              : "Xem lại bài kiểm tra cũ hoặc thêm bài mới để phân tích."}
+          </p>
+        </div>
+      </div>
+
+      <button
+        onClick={onNew}
+        className={`w-full flex items-center gap-3 rounded-2xl border-2 border-dashed border-${color}-300 bg-${color}-50 p-5 text-left hover:border-${color}-500 hover:bg-${color}-100 transition-all group`}
+      >
+        <div className={`size-10 rounded-xl bg-${color}-100 group-hover:bg-${color}-200 flex items-center justify-center transition-colors`}>
+          <Plus className={`size-5 text-${color}-600`} />
+        </div>
+        <span className={`font-semibold text-${color}-700 text-sm`}>{newLabel}</span>
+        <ArrowRight className={`size-4 text-${color}-500 ml-auto`} />
+      </button>
+
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-slate-400 justify-center py-8">
+          <Loader2 className="size-4 animate-spin" /> Đang tải...
+        </div>
+      ) : subjects.length === 0 ? (
+        <div className="text-center py-12">
+          <History className="size-10 mx-auto text-slate-300 mb-3" />
+          <p className="text-slate-500 text-sm">{emptyText}</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+            {subjects.length} {itemLabel} đã lưu
+          </p>
+          {subjects.map((s) => (
+            <button
+              key={s.subject}
+              onClick={() => onViewSubject(s.subject)}
+              className="w-full flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-indigo-300 hover:shadow-md transition-all group"
+            >
+              <div className={`size-10 rounded-xl bg-${color}-50 flex items-center justify-center shrink-0`}>
+                {mode === "onboarding" ? (
+                  <BookOpen className={`size-5 text-${color}-600`} />
+                ) : (
+                  <Trophy className={`size-5 text-${color}-600`} />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-slate-800 truncate">{s.subject}</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {s.count} lần · {new Date(s.last_used).toLocaleDateString("vi-VN")}
+                </p>
+              </div>
+              <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 transition-colors shrink-0" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Subject Detail (danh sách analyses của 1 môn)
+// ──────────────────────────────────────────────────────────────────────────
+function SubjectDetailScreen({
+  subject,
+  mode,
+  onBack,
+  onViewAnalysis,
+}: {
+  subject: string;
+  mode: "onboarding" | "post_exam";
+  onBack: () => void;
+  onViewAnalysis: (a: ExamAnalysisSummary) => void;
+}) {
+  const [analyses, setAnalyses] = useState<ExamAnalysisSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const color = mode === "onboarding" ? "indigo" : "emerald";
+
+  useEffect(() => {
+    setLoading(true);
+    listAnalysesBySubject(subject)
+      .then(setAnalyses)
+      .catch(() => setAnalyses([]))
+      .finally(() => setLoading(false));
+  }, [subject]);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-3">
+        <button onClick={onBack} className="text-slate-500 hover:text-slate-800 transition-colors p-1">
+          <X className="size-5" />
+        </button>
+        <div>
+          <h2 className="font-bold text-slate-900 text-xl">{subject}</h2>
+          <p className="text-sm text-slate-500">Lịch sử phân tích</p>
+        </div>
+      </div>
+      {loading ? (
+        <div className="flex items-center gap-2 text-sm text-slate-400 justify-center py-8">
+          <Loader2 className="size-4 animate-spin" /> Đang tải...
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {analyses.map((a) => (
+            <button
+              key={a.id}
+              onClick={() => onViewAnalysis(a)}
+              className="w-full flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 text-left hover:border-indigo-300 hover:shadow transition-all group"
+            >
+              <FileText className={`size-5 text-${color}-500 shrink-0`} />
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-slate-800 truncate text-sm">{a.filename}</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {new Date(a.created_at).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  {" · "}{a.mastery_updates_count} mastery cập nhật
+                </p>
+              </div>
+              <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 shrink-0" />
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -516,109 +1027,83 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
 // ──────────────────────────────────────────────────────────────────────────
 // Main Page
 // ──────────────────────────────────────────────────────────────────────────
-export function PersonalizedLearningPage() {
-  const [flow, setFlow] = useState<Flow>("choose");
-
+export function PersonalizedLearningPage({ mode }: { mode: "onboarding" | "post_exam" }) {
   return (
     <div className="space-y-6">
-      {flow === "choose" && (
-        <>
-          <PageHeader
-            title="Học tập cá nhân hóa"
-            description="Chọn hướng phù hợp. Hệ thống sẽ phân tích tài liệu và tạo lộ trình riêng cho bạn."
-          />
-          <div className="grid gap-5 sm:grid-cols-2 max-w-2xl mx-auto">
-            <button
-              onClick={() => setFlow("onboarding")}
-              className="group flex flex-col gap-4 rounded-2xl border-2 border-slate-200 bg-white p-6 text-left hover:border-indigo-400 hover:shadow-lg transition-all"
-            >
-              <div className="size-12 rounded-xl bg-indigo-100 flex items-center justify-center group-hover:bg-indigo-200 transition-colors">
-                <GraduationCap className="size-6 text-indigo-600" />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Bắt đầu học mới</h3>
-                <p className="text-sm text-slate-500 mt-1">
-                  Upload tài liệu. Hệ thống tự nhận diện môn học, gợi ý mục tiêu, kiểm tra năng lực và tạo lộ trình phù hợp.
-                </p>
-              </div>
-              <span className="flex items-center gap-1 text-sm font-semibold text-indigo-600 mt-auto">
-                Bắt đầu <ArrowRight className="size-4" />
-              </span>
-            </button>
-
-            <button
-              onClick={() => setFlow("post_exam")}
-              className="group flex flex-col gap-4 rounded-2xl border-2 border-slate-200 bg-white p-6 text-left hover:border-emerald-400 hover:shadow-lg transition-all"
-            >
-              <div className="size-12 rounded-xl bg-emerald-100 flex items-center justify-center group-hover:bg-emerald-200 transition-colors">
-                <Trophy className="size-6 text-emerald-600" />
-              </div>
-              <div>
-                <h3 className="font-bold text-slate-900 text-lg">Cải thiện sau kỳ thi</h3>
-                <p className="text-sm text-slate-500 mt-1">
-                  Upload đề thi và điền điểm số. AI phân tích điểm yếu và đề xuất lộ trình cải thiện cụ thể.
-                </p>
-              </div>
-              <span className="flex items-center gap-1 text-sm font-semibold text-emerald-600 mt-auto">
-                Bắt đầu <ArrowRight className="size-4" />
-              </span>
-            </button>
-          </div>
-        </>
-      )}
-      {flow === "onboarding" && <OnboardingFlow onBack={() => setFlow("choose")} />}
-      {flow === "post_exam" && <PostExamFlow onBack={() => setFlow("choose")} />}
+      {mode === "onboarding" && <OnboardingFlow />}
+      {mode === "post_exam" && <PostExamFlow />}
     </div>
   );
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Flow 1: Onboarding (4 bước gọn)
+// Flow 1: Onboarding (Bắt đầu học mới)
 // ──────────────────────────────────────────────────────────────────────────
-function OnboardingFlow({ onBack }: { onBack: () => void }) {
-  const [step, setStep] = useState<OnboardingStep>("upload_and_info");
+function OnboardingFlow() {
+  const [screen, setScreen] = useState<OnboardingScreen>("subject_list");
+  const [viewingSubject, setViewingSubject] = useState<string | null>(null);
 
-  const [file, setFile] = useState<File | null>(null);
-
+  const [files, setFiles] = useState<File[]>([]);
   const [analysis, setAnalysis] = useState<DocumentAnalysisResult | null>(null);
   const [selectedGoal, setSelectedGoal] = useState<string>("");
   const [customGoal, setCustomGoal] = useState<string>("");
-
   const [quiz, setQuiz] = useState<QuizQuestion[]>([]);
   const [topicSummary, setTopicSummary] = useState("");
   const [answers, setAnswers] = useState<Record<number, string>>({});
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>([]);
-
   const [finalResult, setFinalResult] = useState<ExamAnalysisDetail | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
   const [error, setError] = useState("");
-  
   const [showLevelWarning, setShowLevelWarning] = useState(false);
+  const [showMultiSubjectWarning, setShowMultiSubjectWarning] = useState(false);
+  const [showMasteryWarning, setShowMasteryWarning] = useState(false);
+  const [showDuplicateRoadmapWarning, setShowDuplicateRoadmapWarning] = useState(false);
+  const [showDuplicateFileWarning, setShowDuplicateFileWarning] = useState(false);
 
-  const steps = ["Upload & Thông tin", "Chọn mục tiêu", "Bài kiểm tra nhanh", "Kết quả & Lộ trình"];
-  const stepIndex = { upload_and_info: 0, goal_selection: 1, quiz: 2, result: 3 }[step];
+  // Progress calculation
+  const progressMap: Record<OnboardingScreen, number> = {
+    subject_list: 0,
+    upload_and_info: 20,
+    goal_selection: 50,
+    quiz: 75,
+    result: 100,
+  };
+  const progress = progressMap[screen];
 
   const effectiveGoal = customGoal.trim() || selectedGoal;
 
+  // ─── Handlers ───
   async function handleAnalyzeDocument() {
-    if (!file) { setError("Vui lòng chọn file tài liệu."); return; }
+    if (files.length === 0) { setError("Vui lòng chọn ít nhất 1 file tài liệu."); return; }
     setError("");
     setLoading(true);
     setLoadingMsg("Đang đọc và phân tích tài liệu...");
     try {
-      const result = await analyzeDocument(file);
+      const result = await analyzeDocument(files.length === 1 ? files[0] : files);
       if (!result.is_learning_doc) {
-        setError(result.not_learning_message || "Tài liệu này không phải tài liệu học tập. Hãy thử file khác.");
+        setError(result.not_learning_message || "Tài liệu này không phải tài liệu học tập.");
         return;
       }
       setAnalysis(result);
-      if (result.level_gap === "exceeds_user") {
+
+      // Kiểm tra thứ tự ưu tiên: duplicate_file > multi-subject > level warning > mastery > duplicate roadmap
+      if (result.duplicate_file) {
+        setShowDuplicateFileWarning(true);
+      } else if (result.multi_subject_detected) {
+        setShowMultiSubjectWarning(true);
+      } else if (result.level_gap === "exceeds_user") {
         setShowLevelWarning(true);
+      } else if (result.has_existing_mastery) {
+        if (result.existing_roadmap_title) {
+          setShowDuplicateRoadmapWarning(true);
+        } else {
+          setShowMasteryWarning(true);
+        }
       } else {
-        setStep("goal_selection");
+        setScreen("goal_selection");
       }
     } catch (e) {
       setError(getApiErrorMessage(e));
@@ -643,7 +1128,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
       });
       setQuiz(result.quiz);
       setTopicSummary(result.topic_summary);
-      setStep("quiz");
+      setScreen("quiz");
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -653,7 +1138,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
   }
 
   async function handleSubmitQuiz() {
-    if (!file || !analysis) return;
+    if (!files.length || !analysis) return;
     const computed: QuizAnswer[] = quiz.map((q) => ({
       questionId: q.id,
       selectedOption: answers[q.id] ?? "",
@@ -665,12 +1150,11 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
     setQuizSubmitted(true);
     setLoading(true);
     setLoadingMsg("Đang phân tích kết quả và sinh lộ trình học tập...");
-
     try {
       const quizResultsJson = JSON.stringify(
         computed.map((a) => ({ topic: a.topic, correct: a.correct, difficulty: a.difficulty }))
       );
-      const data = await submitExam(file, {
+      const data = await submitExam(files[0], {
         mode: "onboarding",
         selectedGoal: effectiveGoal,
         subject: analysis.subject,
@@ -679,7 +1163,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
         isCodeRelated: analysis.is_code_related,
       });
       setFinalResult(data);
-      setStep("result");
+      setScreen("result");
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -692,10 +1176,56 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
     ? Math.round((quizAnswers.filter((a) => a.correct).length / quizAnswers.length) * 100)
     : 0;
 
+  async function handleViewAnalysis(id: string) {
+    setLoading(true);
+    setLoadingMsg("Đang tải dữ liệu lịch sử...");
+    setError("");
+    try {
+      const detail = await getExamAnalysis(id);
+      setFinalResult(detail);
+      setScreen("result");
+    } catch (e) {
+      setError(getApiErrorMessage(e));
+    } finally {
+      setLoading(false);
+      setLoadingMsg("");
+    }
+  }
+
+  // ─── Screens ───
+  if (screen === "subject_list") {
+    if (viewingSubject) {
+      return (
+        <SubjectDetailScreen
+          subject={viewingSubject}
+          mode="onboarding"
+          onBack={() => setViewingSubject(null)}
+          onViewAnalysis={(a) => handleViewAnalysis(a.id)}
+        />
+      );
+    }
+    return (
+      <SubjectListScreen
+        mode="onboarding"
+        onNew={() => setScreen("upload_and_info")}
+        onBack={() => {}}
+        onViewSubject={(s) => setViewingSubject(s)}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} className="text-slate-500 hover:text-slate-800 transition-colors p-1">
+        <button
+          onClick={() => {
+            if (screen === "upload_and_info") setScreen("subject_list");
+            else if (screen === "goal_selection") setScreen("upload_and_info");
+            else if (screen === "quiz") setScreen("goal_selection");
+            else if (screen === "result") setScreen("subject_list");
+          }}
+          className="text-slate-500 hover:text-slate-800 transition-colors p-1"
+        >
           <X className="size-5" />
         </button>
         <div>
@@ -704,7 +1234,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
         </div>
       </div>
 
-      <StepIndicator steps={steps} current={stepIndex} />
+      <ProgressBar progress={progress} label="Tiến độ tạo lộ trình" />
 
       {error && (
         <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 max-w-2xl mx-auto">
@@ -716,22 +1246,89 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {/* Step 1: Upload + Info */}
-      {step === "upload_and_info" && (
+      {/* Step 1: Upload */}
+      {screen === "upload_and_info" && (
         <div className="max-w-xl mx-auto space-y-5">
-          <DropZone file={file} onFile={(f) => { setFile(f); setError(""); }} onClear={() => setFile(null)} />
-
-          <Button className="w-full" onClick={handleAnalyzeDocument} isLoading={loading} disabled={!file}>
+          <MultiDropZone
+            files={files}
+            onFiles={(newFiles) => { setFiles((prev) => [...prev, ...newFiles]); setError(""); }}
+            onRemove={(i) => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
+          />
+          <Button className="w-full" onClick={handleAnalyzeDocument} isLoading={loading} disabled={files.length === 0}>
             {loading ? loadingMsg : <><BrainCircuit className="size-4" /> Phân tích tài liệu</>}
           </Button>
-          {!file && <p className="text-xs text-slate-400 text-center">Chọn file tài liệu học trước khi tiếp tục</p>}
+          {files.length === 0 && <p className="text-xs text-slate-400 text-center">Chọn file tài liệu học trước khi tiếp tục</p>}
         </div>
       )}
 
-      {/* Warning Modal */}
+      {/* Modal: Duplicate file warning */}
+      {showDuplicateFileWarning && analysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3 text-indigo-600">
+              <div className="flex size-10 items-center justify-center rounded-full bg-indigo-100">
+                <FileText className="size-5" />
+              </div>
+              <h3 className="font-bold text-lg text-slate-900">Tài liệu đã tồn tại</h3>
+            </div>
+            <p className="text-slate-600 text-sm mb-6 leading-relaxed">
+              Bạn đã từng tải tài liệu này lên hệ thống (môn <strong>{analysis.duplicate_subject}</strong> lúc {analysis.duplicate_created_at ? new Date(analysis.duplicate_created_at).toLocaleDateString("vi-VN") : "trước đây"}). 
+              Bạn có muốn xem lại phân tích cũ để tránh tốn bộ nhớ vô ích, hay muốn phân tích lại từ đầu?
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="secondary" onClick={() => { 
+                setShowDuplicateFileWarning(false); 
+                if (analysis.existing_analysis_id) {
+                  handleViewAnalysis(analysis.existing_analysis_id);
+                } else {
+                  setScreen("subject_list");
+                }
+              }}>
+                Xem phân tích cũ
+              </Button>
+              <Button onClick={() => { setShowDuplicateFileWarning(false); setScreen("goal_selection"); }}>
+                Phân tích lại
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Multi-subject warning */}
+      {showMultiSubjectWarning && analysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3 text-indigo-600">
+              <div className="flex size-10 items-center justify-center rounded-full bg-indigo-100">
+                <BrainCircuit className="size-5" />
+              </div>
+              <h3 className="font-bold text-lg text-slate-900">Phát hiện nhiều môn học</h3>
+            </div>
+            <p className="text-slate-600 text-sm mb-2 leading-relaxed">
+              Hệ thống phát hiện các file bạn upload thuộc <strong>{analysis.subjects.length} môn khác nhau</strong>:
+            </p>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {analysis.subjects.map((s) => (
+                <span key={s} className="text-xs bg-indigo-50 text-indigo-700 rounded-full px-3 py-1 font-medium border border-indigo-200">{s}</span>
+              ))}
+            </div>
+            <p className="text-slate-600 text-sm mb-6">Bạn có muốn học tất cả các môn này cùng lúc không?</p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="secondary" onClick={() => { setShowMultiSubjectWarning(false); setFiles([]); setAnalysis(null); }}>
+                Không — Upload lại
+              </Button>
+              <Button onClick={() => { setShowMultiSubjectWarning(false); setScreen("goal_selection"); }}>
+                Có, học cả {analysis.subjects.length} môn
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Level warning */}
       {showLevelWarning && analysis && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
-          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl animate-in zoom-in-95 fade-in">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
             <div className="mb-4 flex items-center gap-3 text-amber-600">
               <div className="flex size-10 items-center justify-center rounded-full bg-amber-100">
                 <AlertCircle className="size-5" />
@@ -742,22 +1339,63 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
               {analysis.warning_message || "Tài liệu này có vẻ vượt quá trình độ hiện tại của bạn. Bạn có muốn thử thách bản thân và tiếp tục không?"}
             </p>
             <div className="flex gap-3 justify-end">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setShowLevelWarning(false);
-                  setFile(null); // Cancel and clear file
-                }}
-              >
-                Hủy bỏ
+              <Button variant="secondary" onClick={() => { setShowLevelWarning(false); setFiles([]); }}>Hủy bỏ</Button>
+              <Button onClick={() => { setShowLevelWarning(false); setScreen("goal_selection"); }}>Vẫn tiếp tục</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Existing mastery */}
+      {showMasteryWarning && analysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3 text-indigo-600">
+              <div className="flex size-10 items-center justify-center rounded-full bg-indigo-100">
+                <BookOpen className="size-5" />
+              </div>
+              <h3 className="font-bold text-lg text-slate-900">Môn này bạn đã từng học</h3>
+            </div>
+            <p className="text-slate-600 text-sm mb-2 leading-relaxed">
+              Bạn đang tải một <strong>tài liệu mới</strong> thuộc môn <strong>{analysis.subject}</strong> — một môn bạn đã từng học và có dữ liệu năng lực.
+            </p>
+            <p className="text-slate-500 text-xs mb-6 leading-relaxed bg-indigo-50 border border-indigo-100 rounded-lg p-3">
+              💡 Lưu ý: Tài liệu mới này có nội dung khác với tài liệu cũ. Nếu tiếp tục, hệ thống sẽ tạo thêm một bản phân tích mới cho cùng môn này dựa trên nội dung tài liệu mới.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="secondary" onClick={() => { setShowMasteryWarning(false); setScreen("subject_list"); }}>
+                Xem lại lịch sử cũ
               </Button>
-              <Button
-                onClick={() => {
-                  setShowLevelWarning(false);
-                  setStep("goal_selection"); // Proceed
-                }}
-              >
-                Vẫn tiếp tục
+              <Button onClick={() => { setShowMasteryWarning(false); setScreen("goal_selection"); }}>
+                Tiếp tục với tài liệu mới
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Duplicate roadmap warning */}
+      {showDuplicateRoadmapWarning && analysis && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3 text-amber-600">
+              <div className="flex size-10 items-center justify-center rounded-full bg-amber-100">
+                <AlertCircle className="size-5" />
+              </div>
+              <h3 className="font-bold text-lg text-slate-900">Bạn đang có lộ trình dang dở</h3>
+            </div>
+            <p className="text-slate-600 text-sm mb-2 leading-relaxed">
+              Bạn đang tải một <strong>tài liệu mới</strong> thuộc môn <strong>{analysis.subject}</strong>, nhưng bạn đang có lộ trình học chưa hoàn thành: <strong>"{analysis.existing_roadmap_title}"</strong>.
+            </p>
+            <p className="text-slate-500 text-xs mb-6 leading-relaxed bg-amber-50 border border-amber-100 rounded-lg p-3">
+              ⚠️ Nếu tạo lộ trình mới từ tài liệu này, lộ trình cũ vẫn được giữ nguyên trong lịch sử nhưng bạn sẽ phải quản lý hai lộ trình song song cho cùng một môn.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="secondary" onClick={() => { setShowDuplicateRoadmapWarning(false); setScreen("subject_list"); }}>
+                Quay lại — Tiếp tục lộ trình cũ
+              </Button>
+              <Button onClick={() => { setShowDuplicateRoadmapWarning(false); setScreen("goal_selection"); }}>
+                Tạo lộ trình mới từ tài liệu này
               </Button>
             </div>
           </div>
@@ -765,7 +1403,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {/* Step 2: Goal selection */}
-      {step === "goal_selection" && analysis && (
+      {screen === "goal_selection" && analysis && (
         <div className="max-w-xl mx-auto space-y-5">
           <div className="rounded-xl bg-indigo-50 border border-indigo-200 p-4">
             <div className="flex items-center gap-2 mb-1">
@@ -795,7 +1433,9 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
                 const isDisabled = customGoal.trim().length > 0;
                 const isSelected = selectedGoal === goal && !isDisabled;
                 return (
-                  <button key={goal} onClick={() => { if (!isDisabled) setSelectedGoal(goal); }}
+                  <button
+                    key={goal}
+                    onClick={() => { if (!isDisabled) setSelectedGoal(goal); }}
                     disabled={isDisabled}
                     className={`text-left rounded-xl border-2 px-3 py-2.5 text-sm transition-all
                       ${isSelected ? "border-indigo-500 bg-indigo-50 text-indigo-800 font-medium" : ""}
@@ -826,7 +1466,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
           </div>
 
           <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setStep("upload_and_info")}>Quay lại</Button>
+            <Button variant="secondary" onClick={() => setScreen("upload_and_info")}>Quay lại</Button>
             <Button onClick={handleGenerateQuiz} isLoading={loading} className="flex-1" disabled={!effectiveGoal}>
               {loading ? loadingMsg : <><BrainCircuit className="size-4" /> Tạo bài kiểm tra nhanh</>}
             </Button>
@@ -836,16 +1476,14 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {/* Step 3: Quiz */}
-      {step === "quiz" && (
+      {screen === "quiz" && (
         <div className="max-w-2xl mx-auto space-y-4">
           {topicSummary && (
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700">
               <span className="font-semibold text-slate-800">📚 Phạm vi kiểm tra: </span>{topicSummary}
             </div>
           )}
-          <p className="text-sm text-slate-500">
-            Hãy trả lời {quiz.length} câu hỏi dưới đây (bám sát nội dung tài liệu đã tải lên).
-          </p>
+          <p className="text-sm text-slate-500">Hãy trả lời {quiz.length} câu hỏi dưới đây (bám sát nội dung tài liệu đã tải lên).</p>
 
           {!quizSubmitted ? (
             <div className="space-y-4">
@@ -857,10 +1495,13 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
                   </div>
                   <div className="grid gap-2 sm:grid-cols-2">
                     {(["A", "B", "C", "D"] as const).map((key) => (
-                      <button key={key} onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: key }))}
+                      <button
+                        key={key}
+                        onClick={() => setAnswers((prev) => ({ ...prev, [q.id]: key }))}
                         className={`text-left rounded-lg border px-3 py-2.5 text-sm transition-all
-                          ${answers[q.id] === key ? "border-indigo-400 bg-indigo-50 text-indigo-800 font-medium" : "border-slate-200 hover:border-indigo-200"}`}>
-                        <span className="font-semibold mr-1 shrink-0">{key}.</span> 
+                          ${answers[q.id] === key ? "border-indigo-400 bg-indigo-50 text-indigo-800 font-medium" : "border-slate-200 hover:border-indigo-200"}`}
+                      >
+                        <span className="font-semibold mr-1 shrink-0">{key}.</span>
                         <div className="inline-block align-top break-words">
                           <Markdown components={{ p: 'span' }} remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.options[key]}</Markdown>
                         </div>
@@ -869,7 +1510,6 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
                   </div>
                 </div>
               ))}
-
               <Button onClick={handleSubmitQuiz} className="w-full" disabled={Object.keys(answers).length < quiz.length}>
                 <Trophy className="size-4" /> Nộp bài
               </Button>
@@ -883,9 +1523,7 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
             <div className="space-y-4">
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5 text-center">
                 <p className="text-4xl font-black text-emerald-700">{quizScore}%</p>
-                <p className="text-emerald-800 font-semibold mt-1">
-                  {quizAnswers.filter((a) => a.correct).length}/{quiz.length} câu đúng
-                </p>
+                <p className="text-emerald-800 font-semibold mt-1">{quizAnswers.filter((a) => a.correct).length}/{quiz.length} câu đúng</p>
                 <p className="text-sm text-emerald-600 mt-1">
                   {quizScore >= 70 ? "Bạn có nền tảng tốt!" : quizScore >= 40 ? "Cần ôn lại một số phần." : "Hệ thống sẽ tạo lộ trình từ đầu cho bạn."}
                 </p>
@@ -925,31 +1563,42 @@ function OnboardingFlow({ onBack }: { onBack: () => void }) {
       )}
 
       {/* Step 4: Result */}
-      {step === "result" && finalResult && <ResultPanel result={finalResult} />}
+      {screen === "result" && finalResult && <ResultPanel result={finalResult} />}
     </div>
   );
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Flow 2: Post-Exam (Cải thiện sau thi)
 // ──────────────────────────────────────────────────────────────────────────
-// Flow 2: Post-Exam
-// ──────────────────────────────────────────────────────────────────────────
-function PostExamFlow({ onBack }: { onBack: () => void }) {
-  const [step, setStep] = useState<PostExamStep>("upload");
+function PostExamFlow() {
+  const [screen, setScreen] = useState<PostExamScreen>("exam_list");
+  const [viewingSubject, setViewingSubject] = useState<string | null>(null);
+
   const [file, setFile] = useState<File | null>(null);
   const [score, setScore] = useState("");
   const [maxScore, setMaxScore] = useState("10");
-  
   const [parsedExam, setParsedExam] = useState<ParseExamResponse | null>(null);
   const [selectedQuestions, setSelectedQuestions] = useState<string[]>([]);
   const [supportLevels, setSupportLevels] = useState<Record<string, string>>({});
-  
   const [result, setResult] = useState<ExamAnalysisDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const steps = ["Upload đề thi", "Chọn câu hỏi", "Mức độ hỗ trợ", "Điểm số", "Lộ trình"];
-  const stepIndex = { upload: 0, select_questions: 1, support_levels: 2, form: 3, result: 4 }[step];
+  // Progress
+  const progressMap: Record<PostExamScreen, number> = {
+    exam_list: 0,
+    upload: 20,
+    select_and_score: 60,
+    result: 100,
+  };
+  const progress = progressMap[screen];
+
+  const supportOptions = [
+    "Không biết làm",
+    "Hiểu đề nhưng không biết bắt đầu từ đâu",
+    "Sắp làm được rồi nhưng vẫn còn thiếu một chút",
+  ];
 
   async function handleParse() {
     if (!file) { setError("Vui lòng chọn file đề thi."); return; }
@@ -958,7 +1607,7 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
     try {
       const data = await parseExamDocument(file);
       setParsedExam(data);
-      setStep("select_questions");
+      setScreen("select_and_score");
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -968,12 +1617,15 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
 
   async function handleAnalyze() {
     if (!parsedExam) return;
+    if (selectedQuestions.some((q) => !supportLevels[q])) {
+      setError("Vui lòng chọn mức độ hỗ trợ cho tất cả các câu đã chọn.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      // Build selected questions payload
-      const questionsPayload = selectedQuestions.map(qId => {
-        const qData = parsedExam.questions.find(q => q.id === qId);
+      const questionsPayload = selectedQuestions.map((qId) => {
+        const qData = parsedExam.questions.find((q) => q.id === qId);
         return {
           id: qId,
           content: qData?.content || "",
@@ -989,7 +1641,7 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
         rawText: parsedExam.raw_markdown,
       });
       setResult(data);
-      setStep("result");
+      setScreen("result");
     } catch (e) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -998,30 +1650,67 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
   }
 
   const toggleQuestion = (id: string) => {
-    setSelectedQuestions(prev => 
-      prev.includes(id) ? prev.filter(q => q !== id) : [...prev, id]
+    setSelectedQuestions((prev) =>
+      prev.includes(id) ? prev.filter((q) => q !== id) : [...prev, id]
     );
   };
 
-  const supportOptions = [
-    "Không biết làm",
-    "Hiểu đề nhưng không biết bắt đầu từ đâu",
-    "Sắp làm được rồi nhưng vẫn còn thiếu một chút"
-  ];
+  async function handleViewAnalysis(id: string) {
+    setLoading(true);
+    setError("");
+    try {
+      const detail = await getExamAnalysis(id);
+      setResult(detail);
+      setScreen("result");
+    } catch (e) {
+      setError(getApiErrorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ─── Screens ───
+  if (screen === "exam_list") {
+    if (viewingSubject) {
+      return (
+        <SubjectDetailScreen
+          subject={viewingSubject}
+          mode="post_exam"
+          onBack={() => setViewingSubject(null)}
+          onViewAnalysis={(a) => handleViewAnalysis(a.id)}
+        />
+      );
+    }
+    return (
+      <SubjectListScreen
+        mode="post_exam"
+        onNew={() => setScreen("upload")}
+        onBack={() => {}}
+        onViewSubject={(s) => setViewingSubject(s)}
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <button onClick={onBack} className="text-slate-500 hover:text-slate-800 transition-colors p-1">
+        <button
+          onClick={() => {
+            if (screen === "upload") setScreen("exam_list");
+            else if (screen === "select_and_score") setScreen("upload");
+            else if (screen === "result") setScreen("exam_list");
+          }}
+          className="text-slate-500 hover:text-slate-800 transition-colors p-1"
+        >
           <X className="size-5" />
         </button>
         <div>
-          <h2 className="font-bold text-slate-900 text-xl">Cải thiện sau kỳ thi</h2>
+          <h2 className="font-bold text-slate-900 text-xl">Cải thiện sau thi</h2>
           <p className="text-sm text-slate-500">Phân tích điểm yếu từ bài thi và xây dựng lộ trình ôn luyện.</p>
         </div>
       </div>
 
-      <StepIndicator steps={steps} current={stepIndex} />
+      <ProgressBar progress={progress} label="Tiến độ phân tích bài thi" />
 
       {error && (
         <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800 max-w-2xl mx-auto">
@@ -1033,7 +1722,8 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {step === "upload" && (
+      {/* Step 1: Upload */}
+      {screen === "upload" && (
         <div className="max-w-xl mx-auto space-y-4">
           <p className="text-slate-600 text-sm">Upload file đề thi hoặc bài kiểm tra bạn đã làm (ảnh scan, PDF, DOCX...).</p>
           <DropZone file={file} onFile={setFile} onClear={() => setFile(null)} accent="emerald" />
@@ -1043,109 +1733,14 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {step === "select_questions" && parsedExam && (
+      {/* Step 2: Chọn câu hỏi + mức độ + điểm số (gộp) */}
+      {screen === "select_and_score" && parsedExam && (
         <div className="max-w-3xl mx-auto space-y-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
-            <h3 className="font-bold text-slate-800 text-lg">Chọn câu hỏi cần hỗ trợ</h3>
-            <p className="text-sm text-slate-500">
-              Dưới đây là các câu hỏi hệ thống đã nhận diện được. Hãy chọn những câu bạn làm sai hoặc không chắc chắn để AI phân tích.
-            </p>
-            
-            {parsedExam.header && parsedExam.header.trim().length > 0 && (
-              <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-sm mb-4">
-                <p className="font-semibold text-slate-700 mb-2">Đoạn văn / Dữ kiện chung:</p>
-                <div className="prose prose-sm max-w-none text-slate-600">
-                  <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{parsedExam.header}</Markdown>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-3 max-h-[60vh] overflow-y-auto pr-2">
-              {parsedExam.questions.map((q) => (
-                <div 
-                  key={q.id} 
-                  className={`flex items-start gap-3 p-4 rounded-xl border transition-colors cursor-pointer ${
-                    selectedQuestions.includes(q.id) ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-emerald-300"
-                  }`}
-                  onClick={() => toggleQuestion(q.id)}
-                >
-                  <div className="mt-1 flex-shrink-0">
-                    <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${
-                      selectedQuestions.includes(q.id) ? "bg-emerald-500 border-emerald-500" : "border-slate-300"
-                    }`}>
-                      {selectedQuestions.includes(q.id) && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
-                    </div>
-                  </div>
-                  <div className="flex-1 min-w-0 prose prose-sm max-w-none text-slate-800">
-                    <p className="font-bold mb-1">{q.id}</p>
-                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.content}</Markdown>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setStep("upload")}>Quay lại</Button>
-            <Button className="flex-1" onClick={() => setStep("support_levels")} disabled={selectedQuestions.length === 0}>
-              Kế tiếp <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === "support_levels" && parsedExam && (
-        <div className="max-w-3xl mx-auto space-y-6">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-5">
-            <h3 className="font-bold text-slate-800 text-lg">Mức độ hỗ trợ</h3>
-            <p className="text-sm text-slate-500">
-              Với mỗi câu đã chọn, hãy cho biết bạn đang gặp khó khăn ở mức độ nào để AI có thể tư vấn tốt nhất.
-            </p>
-
-            <div className="space-y-4">
-              {selectedQuestions.map(qId => {
-                const qData = parsedExam.questions.find(q => q.id === qId);
-                return (
-                  <div key={qId} className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/30">
-                    <div className="mb-3 prose prose-sm max-w-none text-slate-700">
-                      <p className="font-bold text-emerald-800">{qId}</p>
-                      <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{qData?.content || ""}</Markdown>
-                    </div>
-                    <div className="space-y-2">
-                      {supportOptions.map(opt => (
-                        <label key={opt} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                          supportLevels[qId] === opt ? "border-emerald-500 bg-white shadow-sm ring-1 ring-emerald-500" : "border-slate-200 bg-white/50 hover:bg-white"
-                        }`}>
-                          <input 
-                            type="radio" 
-                            name={`level-${qId}`} 
-                            className="text-emerald-600 focus:ring-emerald-500"
-                            checked={supportLevels[qId] === opt}
-                            onChange={() => setSupportLevels(prev => ({ ...prev, [qId]: opt }))}
-                          />
-                          <span className="text-sm font-medium text-slate-700">{opt}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setStep("select_questions")}>Quay lại</Button>
-            <Button className="flex-1" onClick={() => setStep("form")} disabled={selectedQuestions.some(q => !supportLevels[q])}>
-              Kế tiếp <ChevronRight className="size-4" />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === "form" && (
-        <div className="max-w-xl mx-auto space-y-5">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
-            <h3 className="font-bold text-slate-800 text-lg mb-4">Điểm số bài làm</h3>
+          {/* Điểm số — ở đầu trang */}
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-5">
+            <h3 className="font-bold text-slate-800 text-base mb-4 flex items-center gap-2">
+              <Trophy className="size-4 text-emerald-600" /> Điểm số bài làm
+            </h3>
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
                 <span className="text-sm font-semibold text-slate-700">Điểm của bạn</span>
@@ -1162,17 +1757,91 @@ function PostExamFlow({ onBack }: { onBack: () => void }) {
             </div>
           </div>
 
+          {/* Câu hỏi */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+            <h3 className="font-bold text-slate-800 text-lg">Chọn câu hỏi cần hỗ trợ</h3>
+            <p className="text-sm text-slate-500">
+              Hãy chọn những câu bạn làm sai hoặc không chắc chắn, rồi cho biết bạn đang gặp khó khăn ở mức độ nào.
+            </p>
+
+            {parsedExam.header && parsedExam.header.trim().length > 0 && (
+              <div className="bg-slate-50 p-4 rounded-lg border border-slate-200 text-sm mb-4">
+                <p className="font-semibold text-slate-700 mb-2">Đoạn văn / Dữ kiện chung:</p>
+                <div className="prose prose-sm max-w-none text-slate-600">
+                  <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{parsedExam.header}</Markdown>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              {parsedExam.questions.map((q) => {
+                const isSelected = selectedQuestions.includes(q.id);
+                return (
+                  <div key={q.id} className={`rounded-xl border transition-colors ${isSelected ? "border-emerald-400 bg-emerald-50" : "border-slate-200 bg-white"}`}>
+                    {/* Câu hỏi header */}
+                    <div
+                      className="flex items-start gap-3 p-4 cursor-pointer"
+                      onClick={() => toggleQuestion(q.id)}
+                    >
+                      <div className="mt-1 flex-shrink-0">
+                        <div className={`w-5 h-5 rounded border flex items-center justify-center transition-colors ${isSelected ? "bg-emerald-500 border-emerald-500" : "border-slate-300"}`}>
+                          {isSelected && <CheckCircle2 className="w-3.5 h-3.5 text-white" />}
+                        </div>
+                      </div>
+                      <div className="flex-1 min-w-0 prose prose-sm max-w-none text-slate-800">
+                        <p className="font-bold mb-1">{q.id}</p>
+                        <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{q.content}</Markdown>
+                      </div>
+                    </div>
+
+                    {/* Mức độ hỗ trợ — chỉ hiện khi chọn */}
+                    {isSelected && (
+                      <div className="px-4 pb-4 pt-0 border-t border-emerald-200">
+                        <p className="text-xs font-semibold text-emerald-700 mb-2 mt-3">Bạn đang gặp khó khăn ở mức nào?</p>
+                        <div className="space-y-1.5">
+                          {supportOptions.map((opt) => (
+                            <label
+                              key={opt}
+                              className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${supportLevels[q.id] === opt ? "border-emerald-500 bg-white shadow-sm ring-1 ring-emerald-500" : "border-slate-200 bg-white/50 hover:bg-white"}`}
+                            >
+                              <input
+                                type="radio"
+                                name={`level-${q.id}`}
+                                className="text-emerald-600 focus:ring-emerald-500"
+                                checked={supportLevels[q.id] === opt}
+                                onChange={() => setSupportLevels((prev) => ({ ...prev, [q.id]: opt }))}
+                              />
+                              <span className="text-sm font-medium text-slate-700">{opt}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setStep("support_levels")}>Quay lại</Button>
-            <Button onClick={handleAnalyze} isLoading={loading} className="flex-1">
-              {loading ? "Đang phân tích và sinh lộ trình..." : <><BrainCircuit className="size-4" /> Phân tích AI</>}
+            <Button variant="secondary" onClick={() => setScreen("upload")}>Quay lại</Button>
+            <Button
+              className="flex-1"
+              onClick={handleAnalyze}
+              isLoading={loading}
+              disabled={selectedQuestions.length === 0 || selectedQuestions.some((q) => !supportLevels[q])}
+            >
+              {loading ? "Đang phân tích và sinh kết quả..." : <><BrainCircuit className="size-4" /> Phân tích AI</>}
             </Button>
           </div>
+          {selectedQuestions.length === 0 && (
+            <p className="text-xs text-slate-400 text-center">Chọn ít nhất 1 câu để tiếp tục</p>
+          )}
         </div>
       )}
 
-      {step === "result" && result && <ResultPanel result={result} />}
+      {/* Step 3: Result */}
+      {screen === "result" && result && <PostExamResultPanel result={result} />}
     </div>
   );
 }
-

@@ -9,6 +9,7 @@ import { PersonalizedLearningPage } from "./pages/PersonalizedLearningPage";
 import { RoadmapPage } from "./pages/RoadmapPage";
 import { StudentProfilePage } from "./pages/StudentProfilePage";
 import { UsersPage } from "./pages/UsersPage";
+import { AdminSubjectsPage } from "./pages/AdminSubjectsPage";
 
 export default function App() {
   return (
@@ -24,12 +25,14 @@ export default function App() {
 
           <Route element={<RequireRole allowed={["student"]} />}>
             <Route path="student-profile" element={<StudentProfilePage />} />
-            <Route path="personalized" element={<PersonalizedLearningPage />} />
+            <Route path="personalized/onboarding" element={<PersonalizedLearningPage mode="onboarding" />} />
+            <Route path="personalized/post-exam" element={<PersonalizedLearningPage mode="post_exam" />} />
             <Route path="roadmap" element={<RoadmapPage />} />
           </Route>
 
           <Route element={<RequireRole allowed={["admin"]} />}>
             <Route path="users" element={<UsersPage />} />
+            <Route path="admin/subjects" element={<AdminSubjectsPage />} />
           </Route>
 
           <Route element={<RequireRole allowed={["student", "admin"]} />}>

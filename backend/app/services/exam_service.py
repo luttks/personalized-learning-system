@@ -69,13 +69,18 @@ def auto_format_math_latex(text: str) -> str:
 def _parse_json_safely(raw: str) -> Any:
     """Loại bỏ trailing commas và dọn dẹp chuỗi JSON trước khi parse."""
     raw = raw.strip()
-    # Nếu LLM trả về markdown code block
-    if raw.startswith("```json"):
-        raw = raw[7:]
-    if raw.startswith("```"):
-        raw = raw[3:]
-    if raw.endswith("```"):
-        raw = raw[:-3]
+    # Tìm block ```json ... ```
+    import re
+    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+    if match:
+        raw = match.group(1)
+    else:
+        # Nếu không có markdown block, cố gắng tìm ngoặc nhọn đầu tiên và cuối cùng
+        start = raw.find('{')
+        end = raw.rfind('}')
+        if start != -1 and end != -1:
+            raw = raw[start:end+1]
+    
     raw = raw.strip()
     # Loại bỏ trailing commas trước ngoặc đóng
     import re
@@ -596,15 +601,16 @@ MỤC TIÊU HỌC TẬP CỦA HỌC VIÊN: {selected_goal}
 
 NỘI DUNG TÀI LIỆU (trích xuất từ file người dùng upload):
 ---
-{document_text[:4000]}
+{document_text[:6000]}
 ---
 
 NHIỆM VỤ: Tạo CHÍNH XÁC 7 câu hỏi trắc nghiệm để kiểm tra năng lực, chia làm 2 phần:
-- 3 câu đầu tiên: Kiểm tra KIẾN THỨC TIÊN QUYẾT (Prerequisites). Đây là những kiến thức cấp dưới/nền tảng bắt buộc phải có để học được tài liệu này. Đánh giá xem người học có đủ gốc không.
-- 4 câu tiếp theo: Kiểm tra NỘI DUNG TRỌNG TÂM của tài liệu trên. Mức độ khó tăng dần từ cơ bản đến vận dụng cao.
+- 3 câu đầu tiên: Kiểm tra KIẾN THỨC NỀN TẢNG cần có để hiểu tài liệu này. Nó là nhóm kiến thức tiên quyết, muốn học được tài liệu này trước tiên phải biết đến nó đã.
+- 4 câu tiếp theo: Kiểm tra NỘI DUNG TRỌNG TÂM cụ thể của tài liệu trên. Mức độ khó tăng dần từ cơ bản đến vận dụng cao.
 
 YÊU CẦU BẮT BUỘC:
-- Câu hỏi PHẢI liên quan trực tiếp đến nội dung trong tài liệu (không tự nghĩ ra câu hỏi không có trong tài liệu)
+- Tất cả 7 câu đều PHẢI xoay quanh nội dung cụ thể trong tài liệu đã cung cấp bên trên. Không được tự đặt ra câu hỏi không có liên quan đến tài liệu.
+- Giải thích câu trả lời PHẢI dẫn chiếu trực tiếp vào nội dung tài liệu (trích dẫn đoạn cụ thể nếu là tài liệu dạng lý thuyết).
 - Phân bố độ khó: 40% dễ, 40% trung bình, 20% khó
 - Mỗi câu có 4 đáp án A/B/C/D, chỉ 1 đúng
 - Giải thích ngắn gọn tại sao đáp án đúng
@@ -708,7 +714,8 @@ Trả về JSON đúng cấu trúc sau (chỉ JSON):
     "loi_khuyen_chung": "...",
     "chi_tiet_tung_cau": []
   }},
-  "tom_tat_tong_quat": "2-3 câu nhận xét tổng thể"
+  "tom_tat_tong_quat": "2-3 câu nhận xét tổng thể",
+  "_goal": "Tên môn học (Ví dụ: Toán, Vật Lý, Hóa Học, Sinh Học...)"
 }}"""
     else:
         prompt = f"""Bạn là chuyên gia phân tích năng lực học tập.{score_context}
@@ -1129,6 +1136,214 @@ async def crawl_resources_per_phase(
             }
 
     return phase_resources
+
+
+# ---------------------------------------------------------------------------
+# Crawl lời giải theo từng câu hỏi cụ thể (Luồng 2 — Phương án 1 & 2)
+# ---------------------------------------------------------------------------
+
+def _search_solution_for_question(question_content: str, limit: int = 3) -> list:
+    """Crawl DuckDuckGo tìm lời giải cho 1 câu hỏi cụ thể."""
+    try:
+        from bs4 import BeautifulSoup  # type: ignore[import]
+        # Lấy 150 ký tự đầu của câu hỏi, bỏ LaTeX
+        clean_q = re.sub(r"\$\$[\s\S]*?\$\$", "", question_content)
+        clean_q = re.sub(r"\$[^$\n]+?\$", "", clean_q)
+        clean_q = re.sub(r"[#\*_\`\\{}\[\]]", " ", clean_q)
+        clean_q = re.sub(r"\s+", " ", clean_q).strip()[:150]
+
+        search_query = f"lời giải bài toán: {clean_q}"
+        encoded = urllib.parse.quote_plus(search_query)
+        req = urllib.request.Request(
+            f"https://html.duckduckgo.com/html/?q={encoded}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "vi,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            soup = BeautifulSoup(resp.read().decode("utf-8"), "html.parser")
+        results = []
+        for result in soup.find_all("div", class_="result"):
+            title_tag = result.find("h2", class_="result__title")
+            snippet_tag = result.find("a", class_="result__snippet")
+            url_tag = result.find("a", class_="result__url")
+            if title_tag and url_tag:
+                link = url_tag.get("href", "")
+                if link.startswith("//duckduckgo.com/l/?uddg="):
+                    link = urllib.parse.unquote(link.split("uddg=")[1].split("&")[0])
+                results.append({
+                    "title": title_tag.get_text(separator=" ", strip=True),
+                    "url": link,
+                    "snippet": snippet_tag.get_text(separator=" ", strip=True) if snippet_tag else "",
+                })
+                if len(results) >= limit:
+                    break
+        return results
+    except Exception:
+        return []
+
+
+async def crawl_solution_for_question(question_content: str) -> list[dict]:
+    """Async wrapper: crawl lời giải cho 1 câu hỏi cụ thể qua DuckDuckGo."""
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_executor, _search_solution_for_question, question_content, 3)
+    return result if isinstance(result, list) else []
+
+
+async def generate_solution_hint(
+    question_content: str,
+    support_level: str,
+    gemini_api_keys: list[str],
+    llm_api_keys: list[str],
+    llm_base_url: str,
+    llm_model: str,
+) -> dict[str, Any]:
+    """
+    Sinh gợi ý giải quyết theo mức độ hỗ trợ:
+    - "Hiểu đề nhưng không biết bắt đầu từ đâu": hướng giải quyết
+    - "Sắp làm được rồi nhưng vẫn còn thiếu một chút": hướng + bẫy + mẹo
+    Trả về: { hint: str, traps: str, tips: str }
+    """
+    if support_level == "Hiểu đề nhưng không biết bắt đầu từ đâu":
+        prompt = f"""Bạn là gia sư môn học. Học sinh hiểu đề bài dưới đây nhưng không biết bắt đầu giải từ đâu.
+Hãy đưa ra hướng giải quyết vấn đề: xác định phương pháp, bước đầu tiên cần làm, kiến thức liên quan cần dùng.
+KHÔNG giải thẳng ra đáp án. Chỉ gợi ý hướng đi.
+
+CÂU HỎI:
+{question_content[:500]}
+
+Trả về JSON:
+{{
+  "hint": "Hướng giải quyết vấn đề (3-5 câu, chỉ gợi ý cách tiếp cận không phải lời giải)",
+  "traps": "",
+  "tips": "Lời khuyên ngắn để bắt đầu"
+}}"""
+    else:  # "Sắp làm được rồi nhưng vẫn còn thiếu một chút"
+        prompt = f"""Bạn là gia sư môn học. Học sinh gần làm được bài dưới đây nhưng vẫn chưa giải được hoàn toàn.
+Hãy trình bày: (1) Hướng giải quyết chi tiết hơn, (2) Các bẫy thường gặp trong bài này, (3) Mẹo để giải đúng.
+KHÔNG giải thẳng ra đáp án cuối cùng.
+
+CÂU HỎI:
+{question_content[:500]}
+
+Trả về JSON:
+{{
+  "hint": "Hướng giải quyết chi tiết (3-5 câu)",
+  "traps": "Các bẫy cần tránh trong bài này (gạch đầu dòng)",
+  "tips": "Mẹo để giải bài này nhanh và chính xác"
+}}"""
+
+    try:
+        raw = await _call_llm_with_fallback(
+            prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=30.0
+        )
+        return _parse_json_safely(raw)
+    except Exception as e:
+        logger.warning(f"generate_solution_hint failed: {e}")
+        return {"hint": "", "traps": "", "tips": ""}
+
+
+# ---------------------------------------------------------------------------
+# Multi-document analysis (Luồng 1 — Upload nhiều file)
+# ---------------------------------------------------------------------------
+
+async def analyze_multiple_documents(
+    files: list[tuple[bytes, str]],  # list of (file_bytes, filename)
+    gemini_api_keys: list[str],
+    llm_api_keys: list[str],
+    llm_base_url: str,
+    llm_model: str | None,
+) -> dict[str, Any]:
+    """
+    Phân tích nhiều file cùng lúc.
+    Trả về:
+    {
+        results: list[dict],  # kết quả analyze cho từng file
+        merged_subject: str,  # môn học chung nếu cùng môn
+        subjects: list[str],  # danh sách các môn phát hiện được
+        multi_subject_detected: bool,  # True nếu phát hiện > 1 môn khác nhau
+        merged_raw_text: str,  # raw text gộp để sinh quiz
+        merged_topics: list[str],
+        merged_goals: list[str],
+        is_code_related: bool,
+        ocr_engine: str,
+    }
+    """
+    tasks = [
+        analyze_document_for_learning(fb, fn, gemini_api_keys, llm_api_keys, llm_base_url, llm_model)
+        for fb, fn in files
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    valid = [r for r in results if isinstance(r, dict) and r.get("is_learning_doc")]
+    subjects = list(dict.fromkeys(r.get("subject", "") for r in valid if r.get("subject")))
+
+    # Phát hiện đa môn: so sánh từ đầu tiên (bỏ số, ký tự đặc biệt)
+    def normalize_subject(s: str) -> str:
+        return re.sub(r"[\d\s\W]+", "", s.lower())[:10]
+
+    normalized = [normalize_subject(s) for s in subjects]
+    unique_normalized = list(dict.fromkeys(normalized))
+    multi_subject = len(unique_normalized) > 1
+
+    merged_raw = "\n\n---\n\n".join(r.get("raw_text", "") for r in valid)[:6000]
+    merged_topics = list(dict.fromkeys(t for r in valid for t in r.get("topics", [])))[:10]
+    merged_goals = valid[0].get("suggested_goals", []) if valid else []
+    is_code = any(r.get("is_code_related") for r in valid)
+    ocr_engine = valid[0].get("ocr_engine", "unknown") if valid else "unknown"
+    merged_subject = subjects[0] if subjects else "Tài liệu học tập"
+
+    return {
+        "results": [r for r in results if isinstance(r, dict)],
+        "merged_subject": merged_subject,
+        "subjects": subjects,
+        "multi_subject_detected": multi_subject,
+        "merged_raw_text": merged_raw,
+        "merged_topics": merged_topics,
+        "merged_goals": merged_goals,
+        "is_code_related": is_code,
+        "ocr_engine": ocr_engine,
+    }
+
+
+# ---------------------------------------------------------------------------
+# File Storage Helper
+# ---------------------------------------------------------------------------
+
+def save_upload_file(
+    file_bytes: bytes,
+    filename: str,
+    user_id: str,
+    folder_type: str,  # "Doc" hoặc "Exam"
+    subject_name: str,
+    base_uploads_dir: str = "uploads",
+) -> str:
+    """
+    Lưu file vào uploads/{user_id}/{folder_type}/{subject_name}/{filename}
+    Trả về đường dẫn tương đối đã lưu.
+    """
+    import re as _re
+    # Sanitize subject_name thành tên thư mục hợp lệ
+    safe_subject = _re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', subject_name)
+    safe_subject = safe_subject.strip(". ")[:80] or "Unknown"
+
+    dir_path = os.path.join(base_uploads_dir, str(user_id), folder_type, safe_subject)
+    os.makedirs(dir_path, exist_ok=True)
+
+    # Tránh trùng tên file: thêm timestamp nếu trùng
+    base, ext = os.path.splitext(filename)
+    target = os.path.join(dir_path, filename)
+    if os.path.exists(target):
+        from datetime import datetime as _dt
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        target = os.path.join(dir_path, f"{base}_{ts}{ext}")
+
+    with open(target, "wb") as f:
+        f.write(file_bytes)
+
+    # Trả về đường dẫn tương đối (dùng / thay \)
+    return target.replace("\\", "/")
 
 
 # ---------------------------------------------------------------------------

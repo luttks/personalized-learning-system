@@ -19,6 +19,9 @@ class ExamAnalysis(Base, UUIDPrimaryKeyMixin):
         nullable=False,
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Tên môn học / bài thi (AI detect)
+    file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)  # Đường dẫn file đã lưu
+    file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # SHA-256 của file để detect trùng lặp
     ocr_engine: Mapped[str] = mapped_column(String(50), default="gemini-3.1-flash-lite", nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     formula_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
