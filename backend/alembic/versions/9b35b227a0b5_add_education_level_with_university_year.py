@@ -24,7 +24,9 @@ def upgrade() -> None:
     op.drop_constraint(op.f('ck_learner_course_profiles_learner_course_profile_versi_1e67'), 'learner_course_profiles', type_='check')
     op.create_check_constraint(op.f('ck_learner_course_profiles_learner_course_profile_version_positive'), 'learner_course_profiles', 'profile_version >= 1')
     education_enum = sa.Enum('under_university', 'university', name='education_level')
-    education_enum.create(op.get_bind())
+    # This enum may remain after the previous migration removes its column.
+    # checkfirst keeps upgrades idempotent on existing local databases.
+    education_enum.create(op.get_bind(), checkfirst=True)
     op.add_column('student_profiles', sa.Column('education_level', education_enum, server_default='under_university', nullable=False))
     op.drop_constraint(op.f('ck_student_profiles_grade_level_range'), 'student_profiles', type_='check')
     op.create_check_constraint(op.f('ck_student_profiles_grade_level_education_check'), 'student_profiles', "(education_level = 'under_university' AND grade_level >= 1 AND grade_level <= 12) OR (education_level = 'university' AND grade_level >= 1 AND grade_level <= 7)")

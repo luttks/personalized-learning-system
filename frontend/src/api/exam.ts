@@ -26,6 +26,44 @@ export interface DocumentAnalysisResult {
   existing_analysis_id: string | null; // ID phân tích trước có cùng hash
   duplicate_subject: string | null;    // Tên môn của phân tích trước
   duplicate_created_at: string | null; // Ngày tạo phân tích trước
+  document_content: LearningDocumentContent;
+}
+
+export interface LearningDocumentBlock {
+  id: string;
+  sequence: number;
+  type: "heading" | "paragraph" | "table_row";
+  text: string;
+  page: number | null;
+  heading_path: string[];
+  locator: { start_offset: number; end_offset: number };
+}
+
+export interface LearningDocumentEvidence {
+  block_id: string;
+  start_offset: number;
+  end_offset: number;
+  quote: string;
+  confidence: number;
+}
+
+export interface LearningDocumentHighlight {
+  id: string;
+  concept: string;
+  importance: "must_learn" | "should_learn" | "reference";
+  reason: string;
+  lesson_number: number;
+  phase_number: number;
+  status: "not_started" | "in_progress" | "mastered";
+  evidence: LearningDocumentEvidence[];
+}
+
+export interface LearningDocumentContent {
+  version: number;
+  filename: string;
+  source_characters: number;
+  blocks: LearningDocumentBlock[];
+  highlights: LearningDocumentHighlight[];
 }
 
 export interface QuizQuestion {
@@ -112,6 +150,7 @@ export interface RoadmapPhase {
   topics: string[];
   daily_plan: string;
   milestone: string;
+  source_refs?: { highlight_id: string; concept: string; importance: string; block_ids: string[] }[];
 }
 
 export interface InlineRoadmap {
@@ -159,6 +198,7 @@ export interface ExamAnalysisDetail {
   phase_resources: Record<string, PhaseResources>;
   roadmap_error: string | null;         // Lỗi nếu sinh lộ trình thất bại
   solution_results: SolutionResult[];   // Per-question results for post_exam
+  document_content: LearningDocumentContent;
   created_at: string;
 }
 
@@ -268,6 +308,7 @@ export async function submitExam(
     examMaxScore?: string;
     selectedQuestions?: string;
     rawText?: string;
+    documentContent?: LearningDocumentContent;
   } = {}
 ): Promise<ExamAnalysisDetail> {
   const formData = new FormData();
@@ -283,6 +324,7 @@ export async function submitExam(
   if (options.examMaxScore !== undefined) formData.append("exam_max_score", options.examMaxScore);
   if (options.selectedQuestions) formData.append("selected_questions", options.selectedQuestions);
   if (options.rawText) formData.append("raw_text", options.rawText);
+  if (options.documentContent) formData.append("document_content", JSON.stringify(options.documentContent));
 
   const response = await apiClient.post<ExamAnalysisDetail>(
     "/learners/me/exams",

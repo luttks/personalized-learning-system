@@ -9,6 +9,7 @@ Chiến lược API:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -17,6 +18,8 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+import zipfile
+from xml.etree import ElementTree
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,7 @@ _executor = ThreadPoolExecutor(max_workers=10)
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 _DOC_EXTS = {".docx", ".doc", ".txt", ".html", ".htm"}
 ALL_SUPPORTED_EXTS = _IMAGE_EXTS | {".pdf"} | _DOC_EXTS
+IMPORTANCE_LEVELS = {"must_learn", "should_learn", "reference"}
 
 _GEMINI_OCR_PROMPT = (
     "Bạn là một mô hình phân tích và bóc tách tài liệu giáo dục. "
@@ -217,18 +221,73 @@ async def run_gemini_ocr(file_bytes: bytes, suffix: str, api_key: str) -> str:
 
 
 def read_text_document(file_bytes: bytes, suffix: str) -> str:
-    """Đọc tệp văn bản đơn giản (.txt, .html, .docx)."""
+    """Đọc tài liệu văn bản mà không biến lỗi đọc thành nội dung giả."""
     if suffix in (".txt", ".html", ".htm"):
         return file_bytes.decode("utf-8", errors="ignore")
-    if suffix in (".docx", ".doc"):
-        try:
-            import docx  # type: ignore[import]
-            import io
-            doc = docx.Document(io.BytesIO(file_bytes))
-            return "\n".join(p.text for p in doc.paragraphs)
-        except Exception:
-            return "Vui lòng cài đặt python-docx để đọc tệp .docx."
+    if suffix == ".docx":
+        return _read_docx_document(file_bytes)
+    if suffix == ".doc":
+        raise ValueError("Định dạng .doc cũ chưa được hỗ trợ; hãy lưu tài liệu thành .docx hoặc PDF.")
     return ""
+
+
+def _read_docx_document(file_bytes: bytes) -> str:
+    """Extract text from DOCX OOXML, preserving paragraphs and table rows."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            xml = archive.read("word/document.xml")
+    except (KeyError, OSError, zipfile.BadZipFile) as error:
+        raise ValueError("File DOCX không hợp lệ hoặc bị hỏng.") from error
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as error:
+        raise ValueError("Không thể đọc cấu trúc XML của file DOCX.") from error
+
+    def local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def text_in(element: ElementTree.Element) -> str:
+        parts: list[str] = []
+        for node in element.iter():
+            name = local_name(node.tag)
+            if name == "t":
+                parts.append(node.text or "")
+            elif name in {"tab", "br", "cr"}:
+                parts.append("\t" if name == "tab" else "\n")
+        return "".join(parts).strip()
+
+    body = next((node for node in root.iter() if local_name(node.tag) == "body"), None)
+    if body is None:
+        raise ValueError("File DOCX không có phần nội dung chính.")
+    blocks: list[str] = []
+
+    def collect(container: ElementTree.Element) -> None:
+        for node in container:
+            name = local_name(node.tag)
+            if name == "p":
+                value = text_in(node)
+                if value:
+                    blocks.append(value)
+            elif name == "tbl":
+                for row in node.iter():
+                    if local_name(row.tag) != "tr":
+                        continue
+                    cells = [
+                        text_in(cell)
+                        for cell in row
+                        if local_name(cell.tag) == "tc"
+                    ]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        blocks.append("[BẢNG] " + " | ".join(cells))
+            else:
+                collect(node)
+
+    collect(body)
+    text = "\n".join(blocks).strip()
+    if not text:
+        raise ValueError("File DOCX không có nội dung văn bản để phân tích.")
+    return text
 
 
 async def extract_text_from_file(
@@ -414,6 +473,173 @@ def _detect_code_related(text: str) -> bool:
     return any(kw in text_lower for kw in _CODE_KEYWORDS)
 
 
+def build_learning_document_content(
+    raw_text: str,
+    *,
+    topics: list[str] | None = None,
+    key_passages: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build addressable source blocks and verified highlights."""
+    raw_parts = [part.strip() for part in re.split(r"\n\s*\n|(?=\[Trang \d+\])", raw_text) if part.strip()]
+    paragraphs: list[str] = []
+    for part in raw_parts:
+        lines = [line.strip() for line in part.splitlines() if line.strip()]
+        # DOCX extraction emits one paragraph per line, while OCR may emit
+        # wrapped prose. Split only when structural markers make the boundary
+        # unambiguous, especially table rows and learning-objective bullets.
+        structural_lines = [
+            line for line in lines
+            if line.startswith("[BẢNG]") or line.startswith(("-", "•", "❖"))
+        ]
+        if len(lines) > 1 and structural_lines:
+            paragraphs.extend(lines)
+        else:
+            paragraphs.append(part)
+    if len(paragraphs) < 2:
+        paragraphs = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    blocks: list[dict[str, Any]] = []
+    cursor = 0
+    heading_path: list[str] = []
+    heading_pattern = re.compile(
+        r"^(?:bài|chương|phần|chủ đề|mục tiêu|kiến thức|kĩ năng|"
+        r"lý thuyết trọng tâm|lí thuyết trọng tâm|bảng hệ thống|"
+        r"[IVX]+[.)])\s*",
+        re.IGNORECASE,
+    )
+    for sequence, text in enumerate(paragraphs):
+        start = raw_text.find(text, cursor)
+        if start < 0:
+            start = cursor
+        cursor = start + len(text)
+        block_type = (
+            "table_row"
+            if text.startswith("[BẢNG]")
+            else "heading"
+            if len(text) <= 220 and (
+                heading_pattern.match(text)
+                or text.isupper()
+            )
+            else "paragraph"
+        )
+        if block_type == "heading":
+            heading_path = [text[:180]]
+        page_match = re.match(r"\[Trang (\d+)\]", text)
+        blocks.append({
+            "id": f"block-{sequence + 1}", "sequence": sequence,
+            "type": block_type, "text": text,
+            "page": int(page_match.group(1)) if page_match else None,
+            "heading_path": list(heading_path),
+            "locator": {"start_offset": start, "end_offset": start + len(text)},
+        })
+
+    highlights: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def fold(value: str) -> str:
+        import unicodedata
+        return "".join(
+            char for char in unicodedata.normalize("NFD", value.casefold())
+            if unicodedata.category(char) != "Mn"
+        )
+
+    critical_terms = (
+        "muc tieu", "kien thuc", "li thuyet trong tam", "ly thuyet trong tam",
+        "chu de", "bai 1", "ket luan", "y nghia", "can nam vung",
+    )
+    main_terms = (
+        "thoi gian", "nien dai", "dau tich", "dia diem", "cong cu",
+        "hoat dong kinh te", "to chuc xa hoi", "doi song", "so sanh",
+        "trong trot", "chan nuoi", "nguyen nhan", "dien bien", "ket qua",
+        "nguoi toi co", "nguoi tinh khon",
+    )
+
+    def block_priority(block: dict[str, Any]) -> tuple[int, str, str]:
+        own_text = fold(block["text"])
+        heading_context = fold(" ".join(block.get("heading_path", [])))
+        if block["type"] == "heading" and any(term in own_text for term in critical_terms):
+            return 100, "must_learn", "Tiêu đề xác định phần kiến thức tiên quyết của tài liệu."
+        if any(term in own_text for term in critical_terms) or (
+            "muc tieu" in heading_context
+            and block["type"] == "paragraph"
+            and (own_text.startswith("-") or "kien thuc" in own_text or "ki nang" in own_text)
+        ):
+            return 90, "must_learn", "Nội dung thuộc mục tiêu hoặc lý thuyết trọng tâm cần nắm trước."
+        if block["type"] == "table_row":
+            return 75, "should_learn", "Dòng bảng hệ thống hóa kiến thức để ghi nhớ và so sánh."
+        matched = [term for term in main_terms if term in own_text]
+        if re.search(r"\b\d+\s*[-–]\s*\d+\s*(van|nam)\b", own_text):
+            matched.append("niên đại")
+        if matched:
+            return 60, "should_learn", "Nội dung chính về " + matched[0] + " cần được đối chiếu khi học."
+        if block["type"] == "heading":
+            return 45, "should_learn", "Tiêu đề giúp định vị cấu trúc bài học."
+        return 0, "reference", "Nội dung tham khảo trong tài liệu."
+
+    def add(block: dict[str, Any], concept: str, importance: str, reason: str, confidence: float) -> None:
+        if block["id"] in seen:
+            return
+        seen.add(block["id"])
+        highlights.append({
+            "id": f"highlight-{len(highlights) + 1}", "concept": concept[:255],
+            "importance": importance if importance in {"must_learn", "should_learn", "reference"} else "should_learn",
+            "reason": reason[:500], "lesson_number": 1, "phase_number": 1,
+            "status": "not_started",
+            "evidence": [{"block_id": block["id"], "start_offset": 0, "end_offset": len(block["text"]), "quote": block["text"], "confidence": confidence}],
+        })
+    for passage in key_passages or []:
+        if not isinstance(passage, dict):
+            continue
+        quote = str(passage.get("quote", "")).strip()
+        block = next((item for item in blocks if len(quote) >= 20 and quote in item["text"]), None)
+        if block:
+            score, _, automatic_reason = block_priority(block)
+            if score >= 90:
+                passage_importance = "must_learn"
+            elif score >= 60:
+                passage_importance = "should_learn"
+            else:
+                passage_importance = "reference"
+            add(
+                block,
+                str(passage.get("concept") or quote[:80]),
+                passage_importance,
+                str(passage.get("reason") or automatic_reason),
+                0.95 if score >= 60 else 0.72,
+            )
+    topics_lower = [
+        topic.casefold()
+        for topic in topics or []
+        if isinstance(topic, str) and len(topic.strip()) >= 3
+    ]
+    scored_blocks: list[tuple[int, dict[str, Any], str, str]] = []
+    for block in blocks:
+        score, importance, reason = block_priority(block)
+        matched_topic = next(
+            (topic for topic in topics_lower if topic in fold(block["text"])),
+            None,
+        )
+        if matched_topic:
+            score += 25
+            importance = "must_learn" if score >= 90 else "should_learn"
+            reason = "Đoạn này khớp trực tiếp với chủ đề được nhận diện trong tài liệu."
+        if score:
+            scored_blocks.append((score, block, importance, reason))
+    for score, block, importance, reason in sorted(
+        scored_blocks, key=lambda item: (-item[0], item[1]["sequence"])
+    )[:24]:
+        add(
+            block,
+            block["heading_path"][-1] if block["heading_path"] else block["text"][:100],
+            importance,
+            reason,
+            min(0.98, 0.55 + score / 200),
+        )
+    if not highlights:
+        for block in blocks[:3]:
+            add(block, block["text"][:100], "should_learn", "Đoạn đầu của tài liệu dùng để định hướng bài học.", 0.55)
+    return blocks, highlights
+
+
 # ---------------------------------------------------------------------------
 # Document Analysis (Luồng 1 — Bước 1+2)
 # ---------------------------------------------------------------------------
@@ -497,11 +723,14 @@ async def analyze_document_for_learning(
             "document_level": None,
         }
 
-    prompt = f"""Bạn là chuyên gia giáo dục. Hãy phân tích đoạn tài liệu sau và trả về JSON.
+    analysis_excerpt = raw_text if len(raw_text) <= 12000 else (
+        raw_text[:6000] + "\n\n[... phần giữa tài liệu được quét ở bước trích xuất ...]\n\n" + raw_text[-6000:]
+    )
+    prompt = f"""Bạn là chuyên gia giáo dục. Hãy phân tích toàn bộ tài liệu sau và trả về JSON.
 
-NỘI DUNG TÀI LIỆU (tối đa 3000 ký tự đầu):
+NỘI DUNG TÀI LIỆU (đầu và cuối tài liệu; toàn bộ văn bản đã được lưu):
 ---
-{raw_text[:3000]}
+{analysis_excerpt}
 ---
 
 Trả về JSON với đúng cấu trúc sau (chỉ JSON, không có text ngoài):
@@ -517,12 +746,14 @@ Trả về JSON với đúng cấu trúc sau (chỉ JSON, không có text ngoài
     "Mục tiêu cụ thể 4 (VD: Ôn tập và hệ thống hóa toàn bộ chương)"
   ],
   "content_summary": "Tóm tắt 2-3 câu về nội dung tài liệu",
+  "key_passages": [{{"concept": "Khái niệm", "importance": "must_learn", "quote": "Trích nguyên văn từ tài liệu", "reason": "Vì sao cần học"}}],
   "is_code_related": true hoặc false (true nếu nội dung liên quan đến lập trình/CNTT),
   "document_level": số_nguyên (Dự đoán trình độ học vấn của tài liệu này trên thang điểm 1-19. Cấp 1-12 tương ứng lớp 1-12. Đại học năm 1-7 tương ứng 13-19. Nếu không rõ, trả về null)
 }}
 
 Lưu ý quan trọng:
 - suggested_goals phải đặc trưng cho môn học này, KHÔNG phải câu chung chung
+- key_passages phải có 5-10 mục, quote phải trích nguyên văn từ tài liệu
 - Nếu là đề thi thì is_learning_doc=true, gợi ý mục tiêu ôn luyện
 - Nếu là ảnh không liên quan học tập (ảnh cá nhân, thiên nhiên...) thì is_learning_doc=false"""
 
@@ -555,6 +786,7 @@ Lưu ý quan trọng:
                 else None
             ),
             "document_level": data.get("document_level"),
+            "key_passages": data.get("key_passages", []),
         }
     except Exception as e:
         logger.warning(f"Document analysis AI failed: {e}, using fallback")
@@ -1302,6 +1534,12 @@ async def analyze_multiple_documents(
         "merged_raw_text": merged_raw,
         "merged_topics": merged_topics,
         "merged_goals": merged_goals,
+        "merged_key_passages": [
+            passage
+            for result in valid
+            for passage in result.get("key_passages", [])
+            if isinstance(passage, dict)
+        ][:12],
         "is_code_related": is_code,
         "ocr_engine": ocr_engine,
     }

@@ -48,6 +48,7 @@ from app.services.exam_service import (
     crawl_solution_for_question,
     generate_solution_hint,
     save_upload_file,
+    build_learning_document_content,
 )
 from app.services.learner_service import (
     ensure_learner_profile,
@@ -93,6 +94,7 @@ class DocumentAnalysisResponse(BaseModel):
     existing_analysis_id: str | None = None  # ID phân tích trước có cùng hash
     duplicate_subject: str | None = None   # Tên môn của phân tích trước
     duplicate_created_at: str | None = None  # Ngày tạo phân tích trước
+    document_content: dict[str, Any] = {}
 
 
 class QuizGenerateRequest(BaseModel):
@@ -153,6 +155,7 @@ class ExamAnalysisDetail(BaseModel):
     roadmap_error: str | None = None  # Ghi nhận lỗi nếu sinh lộ trình thất bại
     # Post-exam: kết quả theo từng phương án
     solution_results: list[dict[str, Any]] = []  # Per-question: hint, traps, tips, crawled_solutions
+    document_content: dict[str, Any] = {}
     created_at: datetime
     model_config = {"from_attributes": True}
 
@@ -318,6 +321,7 @@ async def analyze_document(
         all_file_data.append((file_bytes, filename))
 
     try:
+        key_passages: list[dict[str, Any]] = []
         if len(all_file_data) == 1:
             # Single file — dùng hàm cũ
             result = await analyze_document_for_learning(
@@ -340,6 +344,7 @@ async def analyze_document(
             is_learning_doc = result.get("is_learning_doc", True)
             not_learning_message = result.get("not_learning_message")
             document_level = result.get("document_level")
+            key_passages = result.get("key_passages", [])
         else:
             # Multi file
             merged = await analyze_multiple_documents(
@@ -361,12 +366,26 @@ async def analyze_document(
             is_learning_doc = True
             not_learning_message = None
             document_level = None
+            key_passages = merged.get("merged_key_passages", [])
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
     except Exception as e:
         logger.error(f"Document analysis error: {e}")
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Lỗi phân tích tài liệu. Vui lòng thử lại.") from e
+
+    document_blocks, document_highlights = build_learning_document_content(
+        raw_text,
+        topics=topics,
+        key_passages=key_passages,
+    )
+    document_content = {
+        "version": 1,
+        "filename": all_file_data[0][1] if len(all_file_data) == 1 else "Tài liệu học tập",
+        "source_characters": len(raw_text),
+        "blocks": document_blocks,
+        "highlights": document_highlights,
+    }
 
     # Level comparison (single file only)
     doc_level = document_level
@@ -428,6 +447,7 @@ async def analyze_document(
         existing_analysis_id=existing_analysis_id,
         duplicate_subject=duplicate_subject,
         duplicate_created_at=duplicate_created_at,
+        document_content=document_content,
     )
 
 
@@ -562,6 +582,7 @@ async def submit_exam(
     exam_max_score: Annotated[str | None, Form()] = None,
     selected_questions: Annotated[str | None, Form()] = None,
     raw_text: Annotated[str | None, Form()] = None,
+    document_content: Annotated[str | None, Form()] = None,
 ) -> ExamAnalysisDetail:
     """
     Nộp kết quả cuối cùng cho cả 2 luồng.
@@ -605,6 +626,30 @@ async def submit_exam(
         except Exception:
             pass
 
+    document_content_data: dict[str, Any] = {}
+    if document_content:
+        try:
+            candidate = json.loads(document_content)
+            if isinstance(candidate, dict):
+                blocks = candidate.get("blocks", [])
+                highlights = candidate.get("highlights", [])
+                valid_ids = {b.get("id") for b in blocks if isinstance(b, dict)}
+                # Keep only evidence that points to an actual source block.
+                for highlight in highlights:
+                    if not isinstance(highlight, dict):
+                        continue
+                    evidence = [e for e in highlight.get("evidence", []) if isinstance(e, dict) and e.get("block_id") in valid_ids]
+                    highlight["evidence"] = evidence
+                document_content_data = {
+                    "version": 1,
+                    "filename": str(candidate.get("filename") or filename),
+                    "source_characters": int(candidate.get("source_characters") or 0),
+                    "blocks": [b for b in blocks if isinstance(b, dict)],
+                    "highlights": [h for h in highlights if isinstance(h, dict) and h.get("evidence")],
+                }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            logger.warning("Invalid document_content payload; continuing without highlights")
+
     # Ensure learner profile
     learner = await ensure_learner_profile(session, current_user.id)
 
@@ -633,6 +678,53 @@ async def submit_exam(
         parsed = parse_exam_questions(raw_text)
         parsed["ocr_engine"] = "none"
         parsed["filename"] = filename
+
+    if mode == "onboarding" and not document_content_data:
+        source_text = parsed.get("raw_markdown", "")
+        if source_text:
+            source_blocks, source_highlights = build_learning_document_content(
+                source_text,
+                topics=[subject or ""],
+            )
+            document_content_data = {
+                "version": 1,
+                "filename": filename,
+                "source_characters": len(source_text),
+                "blocks": source_blocks,
+                "highlights": source_highlights,
+            }
+    elif mode == "onboarding" and document_content_data:
+        source_text = parsed.get("raw_markdown", "")
+        if source_text:
+            canonical_blocks, fallback_highlights = build_learning_document_content(
+                source_text,
+                topics=[subject or ""],
+            )
+            canonical_by_id = {block["id"]: block for block in canonical_blocks}
+            verified_highlights: list[dict[str, Any]] = []
+            for highlight in document_content_data.get("highlights", []):
+                verified_evidence = []
+                for evidence in highlight.get("evidence", []):
+                    block = canonical_by_id.get(evidence.get("block_id"))
+                    quote = str(evidence.get("quote", "")).strip()
+                    if block and quote and quote in block["text"]:
+                        try:
+                            confidence = min(float(evidence.get("confidence", 0.5)), 1.0)
+                        except (TypeError, ValueError):
+                            confidence = 0.5
+                        verified_evidence.append({
+                            "block_id": block["id"],
+                            "start_offset": block["text"].find(quote),
+                            "end_offset": block["text"].find(quote) + len(quote),
+                            "quote": quote,
+                            "confidence": confidence,
+                        })
+                if verified_evidence:
+                    highlight["evidence"] = verified_evidence
+                    verified_highlights.append(highlight)
+            document_content_data["blocks"] = canonical_blocks
+            document_content_data["source_characters"] = len(source_text)
+            document_content_data["highlights"] = verified_highlights or fallback_highlights
 
     # AI Recommendation (Groq)
     ai_rec: dict = {}
@@ -822,6 +914,33 @@ async def submit_exam(
                 roadmap_error = f"Sinh lộ trình thất bại: {str(e)[:200]}"
                 logger.error(f"Roadmap generation failed (mode={mode}, subject={subject}): {e}", exc_info=True)
 
+    if inline_roadmap and document_content_data.get("highlights"):
+        highlights = document_content_data["highlights"]
+        for phase in inline_roadmap.get("phases", []):
+            phase_topics = " ".join(str(topic) for topic in phase.get("topics", [])).casefold()
+            matched = [
+                highlight for highlight in highlights
+                if str(highlight.get("concept", "")).casefold() in phase_topics
+                or any(str(topic).casefold() in str(highlight.get("concept", "")).casefold() for topic in phase.get("topics", []))
+            ]
+            if not matched:
+                phase_number = int(phase.get("phase_number") or 1)
+                matched = [h for h in highlights if int(h.get("phase_number") or 1) == phase_number]
+            if not matched:
+                matched = highlights[:3]
+            phase_number = int(phase.get("phase_number") or 1)
+            for highlight in matched:
+                highlight["phase_number"] = phase_number
+            phase["source_refs"] = [
+                {
+                    "highlight_id": h.get("id"),
+                    "concept": h.get("concept"),
+                    "importance": h.get("importance"),
+                    "block_ids": [e.get("block_id") for e in h.get("evidence", [])],
+                }
+                for h in matched[:8]
+            ]
+
 
     # Cập nhật mastery từ AI recommendation (Luồng 2)
     mastery_updates: list[dict] = []
@@ -917,6 +1036,7 @@ async def submit_exam(
             "_goal": selected_goal or ai_rec.get("_goal", ""),
             "_roadmap": inline_roadmap,
             "_solution_results": solution_results,
+            "_document_content": document_content_data,
         },
         resources_json=resources,
         mastery_updates_json=mastery_updates,
@@ -964,6 +1084,7 @@ async def submit_exam(
         phase_resources=phase_resources,
         roadmap_error=roadmap_error,
         solution_results=solution_results,
+        document_content=document_content_data,
         created_at=analysis.created_at,
     )
 
@@ -1107,6 +1228,7 @@ async def get_exam_analysis(
     ai_rec = analysis.ai_recommendation_json or {}
     roadmap = ai_rec.get("_roadmap", {})
     solution_results = ai_rec.get("_solution_results", [])
+    document_content = ai_rec.get("_document_content", {})
 
     return ExamAnalysisDetail(
         id=str(analysis.id),
@@ -1126,5 +1248,6 @@ async def get_exam_analysis(
         roadmap=roadmap,
         phase_resources={},
         solution_results=solution_results,
+        document_content=document_content,
         created_at=analysis.created_at,
     )

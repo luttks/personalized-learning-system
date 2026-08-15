@@ -206,15 +206,50 @@ def fallback_structure(text: str, title: str) -> DocumentStructure:
 def _extract_open_xml(path: Path, tag: str) -> str:
     values: list[str] = []
     with zipfile.ZipFile(path) as archive:
-        for name in archive.namelist():
-            if not name.endswith(".xml"):
+        xml_name = (
+            "word/document.xml"
+            if path.suffix.lower() == ".docx"
+            else "ppt/presentation.xml"
+        )
+        names = [xml_name] if tag == "t" else archive.namelist()
+        for name in names:
+            if not name.endswith(".xml") or name not in archive.namelist():
                 continue
             root = ElementTree.fromstring(archive.read(name))
-            values.extend(
-                node.text or ""
-                for node in root.iter()
-                if node.tag.rsplit("}", 1)[-1] == tag
-            )
+            local = lambda node: node.tag.rsplit("}", 1)[-1]
+
+            def text_in(element: ElementTree.Element) -> str:
+                parts: list[str] = []
+                for node in element.iter():
+                    node_name = local(node)
+                    if node_name == tag:
+                        parts.append(node.text or "")
+                    elif node_name in {"tab", "br", "cr"}:
+                        parts.append("\t" if node_name == "tab" else "\n")
+                return "".join(parts).strip()
+
+            def collect(container: ElementTree.Element) -> None:
+                for node in container:
+                    node_name = local(node)
+                    if node_name == "p":
+                        value = text_in(node)
+                        if value:
+                            values.append(value)
+                    elif node_name == "tbl":
+                        for row in node.iter():
+                            if local(row) != "tr":
+                                continue
+                            cells = [text_in(cell) for cell in row if local(cell) == "tc"]
+                            cells = [cell for cell in cells if cell]
+                            if cells:
+                                values.append("[BẢNG] " + " | ".join(cells))
+                    else:
+                        collect(node)
+
+            if tag == "t" and local(root) in {"document", "body"}:
+                collect(root)
+            elif tag != "t":
+                values.extend(node.text or "" for node in root.iter() if local(node) == tag)
     return "\n".join(values)
 
 

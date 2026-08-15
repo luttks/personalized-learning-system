@@ -44,11 +44,14 @@ import {
   type ExamAnalysisDetail,
   type ExamAnalysisSummary,
   type ExamRecommendation,
+  type ExamResources,
   type InlineRoadmap,
   type PhaseResources,
   type QuizQuestion,
   type ParseExamResponse,
   type SubjectSummary,
+  type LearningDocumentContent,
+  type LearningDocumentHighlight,
 } from "../api/exam";
 import { Button } from "../components/ui";
 
@@ -568,6 +571,16 @@ export function RoadmapInlinePanel({
                       ))}
                     </div>
                   </div>
+                  {phase.source_refs && phase.source_refs.length > 0 && (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+                      <p className="text-xs font-semibold text-amber-800 mb-2 flex items-center gap-1.5"><BookOpen className="size-3.5" /> Nguồn trọng tâm trong tài liệu</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {phase.source_refs.map((ref) => (
+                          <span key={ref.highlight_id} className="rounded-full bg-amber-100 border border-amber-200 px-2 py-0.5 text-xs text-amber-900">{ref.concept}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="rounded-xl bg-white/70 p-3 text-sm">
                     <p className="font-semibold text-slate-800 mb-1">📅 Kế hoạch hàng ngày</p>
                     <p className="text-slate-700">{phase.daily_plan}</p>
@@ -590,15 +603,76 @@ export function RoadmapInlinePanel({
 // ──────────────────────────────────────────────────────────────────────────
 // Result Panel (wraps AI rec + roadmap — luồng 1)
 // ──────────────────────────────────────────────────────────────────────────
+function DocumentReader({ content, compact = false }: { content: LearningDocumentContent; compact?: boolean }) {
+  const [filter, setFilter] = useState<"all" | "must_learn" | "should_learn" | "reference">("all");
+  const [selected, setSelected] = useState<LearningDocumentHighlight | null>(null);
+  const highlightsByBlock = new Map(
+    content.highlights
+      .filter((highlight) => filter === "all" || highlight.importance === filter)
+      .flatMap((highlight) => highlight.evidence.map((evidence) => [evidence.block_id, highlight] as const)),
+  );
+  const visibleBlocks = compact ? content.blocks.slice(0, 80) : content.blocks;
+  const filterClass = (value: "all" | "must_learn" | "should_learn" | "reference") => {
+    if (filter !== value) return "bg-white border-slate-200 text-slate-500 hover:border-indigo-300";
+    if (value === "must_learn") return "bg-amber-100 border-amber-300 text-amber-800";
+    if (value === "should_learn") return "bg-blue-100 border-blue-300 text-blue-800";
+    if (value === "reference") return "bg-slate-200 border-slate-300 text-slate-700";
+    return "bg-indigo-100 border-indigo-300 text-indigo-800";
+  };
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="mr-auto min-w-0">
+          <p className="text-sm font-semibold text-slate-800 flex items-center gap-2"><BookOpen className="size-4 text-indigo-600" /> Tài liệu trọng tâm</p>
+          <p className="text-xs text-slate-500 truncate">{content.filename} · {content.source_characters.toLocaleString()} ký tự</p>
+        </div>
+        {(["must_learn", "should_learn", "reference", "all"] as const).map((value) => (
+          <button key={value} type="button" onClick={() => setFilter(value)} className={"rounded-full px-2.5 py-1 text-xs font-medium border transition-colors " + filterClass(value)}>
+            {value === "must_learn" ? "Cốt lõi" : value === "should_learn" ? "Hỗ trợ" : value === "reference" ? "Đối chiếu" : "Tất cả"}
+          </button>
+        ))}
+      </div>
+      <div className={(compact ? "max-h-72" : "max-h-[32rem]") + " overflow-y-auto px-4 py-3 space-y-1"}>
+        {visibleBlocks.map((block) => {
+          const highlight = highlightsByBlock.get(block.id);
+          const blockClass = highlight
+            ? highlight.importance === "must_learn" ? "bg-amber-100/90 hover:bg-amber-200"
+              : highlight.importance === "should_learn" ? "bg-blue-100/70 hover:bg-blue-200"
+                : "bg-slate-100 hover:bg-slate-200"
+            : "hover:bg-slate-50";
+          return (
+            <button key={block.id} type="button" onClick={() => highlight && setSelected(highlight)}
+              className={"w-full text-left rounded-md px-3 py-2 text-sm leading-6 transition-colors " + blockClass + " " + (block.type === "heading" ? "font-bold text-slate-900" : "text-slate-700")}>
+              {block.type === "table_row" ? (
+                <span className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {block.text.replace(/^\[BẢNG\]\s*/, "").split(" | ").map((cell, index) => <span key={index} className="rounded bg-white/70 px-2 py-1">{cell}</span>)}
+                </span>
+              ) : block.text}
+              {highlight && <span className="ml-2 align-middle text-[10px] uppercase tracking-wide text-slate-500">{highlight.importance === "must_learn" ? "trọng tâm" : "nguồn"}</span>}
+            </button>
+          );
+        })}
+        {compact && content.blocks.length > visibleBlocks.length && <p className="px-3 py-2 text-xs text-slate-400">Mở kết quả để xem toàn bộ tài liệu.</p>}
+      </div>
+      {selected && (
+        <div className="border-t border-slate-200 bg-indigo-50 px-4 py-3">
+          <p className="text-xs font-semibold text-indigo-900">{selected.concept}</p>
+          <p className="mt-1 text-xs text-indigo-800">{selected.reason}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
-  const [tab, setTab] = useState<"roadmap" | "rec">("roadmap");
+  const [tab, setTab] = useState<"roadmap" | "rec" | "document">("roadmap");
   const hasRec = Object.keys(result.ai_recommendation).filter((k) => !k.startsWith("_")).length > 0;
   const hasRoadmap = result.roadmap && result.roadmap.phases?.length > 0;
   const subject = result.subject || result.ai_recommendation?.["_goal"] ? (result.subject || result.filename.replace(/\.[^.]+$/, "")) : "Học tập";
   const goal = (result.ai_recommendation?.["_goal"] as string) || "Nắm vững kiến thức";
 
   return (
-    <div className="space-y-5 max-w-3xl mx-auto">
+    <div className="mx-auto w-full max-w-6xl space-y-5">
       {result.roadmap_error && (
         <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-500" />
@@ -641,6 +715,15 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
             <BrainCircuit className="size-4" /> Phân tích AI
           </button>
         )}
+        {result.document_content?.blocks?.length > 0 && (
+          <button
+            onClick={() => setTab("document")}
+            className={"flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-all " +
+              (tab === "document" ? "border-indigo-600 text-indigo-700" : "border-transparent text-slate-500 hover:text-slate-700")}
+          >
+            <BookOpen className="size-4" /> Tài liệu
+          </button>
+        )}
       </div>
 
       {tab === "roadmap" && hasRoadmap && (
@@ -652,6 +735,7 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
         />
       )}
       {tab === "rec" && hasRec && <RecommendationPanel rec={result.ai_recommendation} />}
+      {tab === "document" && result.document_content?.blocks?.length > 0 && <DocumentReader content={result.document_content} />}
 
       {/* Crawled Resources (Global) */}
       {result.resources && <GlobalResourcesPanel res={result.resources} />}
@@ -1161,6 +1245,7 @@ function OnboardingFlow() {
         quickQuizResults: quizResultsJson,
         rawTextForCrawl: analysis.raw_text.slice(0, 800),
         isCodeRelated: analysis.is_code_related,
+        documentContent: analysis.document_content,
       });
       setFinalResult(data);
       setScreen("result");
@@ -1421,6 +1506,10 @@ function OnboardingFlow() {
               </div>
             )}
           </div>
+
+          {analysis.document_content?.blocks?.length > 0 && (
+            <DocumentReader content={analysis.document_content} compact />
+          )}
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
             <div className="flex items-center gap-2">
