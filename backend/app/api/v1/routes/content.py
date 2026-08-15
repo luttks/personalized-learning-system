@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies.auth import get_current_admin, get_current_teacher_or_admin
+from app.api.dependencies.auth import get_current_admin, get_current_any_role
 from app.core.config import settings
 from app.db.session import get_db_session
 from app.models.user import User
@@ -77,7 +77,7 @@ job_router = APIRouter(prefix="/document-jobs", tags=["Courses and Documents"])
 
 CurrentContentManager = Annotated[
     User,
-    Depends(get_current_teacher_or_admin),
+    Depends(get_current_any_role),
 ]
 CurrentAdmin = Annotated[User, Depends(get_current_admin)]
 DatabaseSession = Annotated[AsyncSession, Depends(get_db_session)]

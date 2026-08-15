@@ -5,14 +5,11 @@ import { AppShell } from "./components/AppShell";
 import { LoginPage, RegisterPage } from "./pages/AuthPages";
 import { DashboardPage } from "./pages/DashboardPage";
 import { CourseManagementPage } from "./pages/CourseManagementPage";
-import { ExamWorkflowPage } from "./pages/ExamWorkflowPage";
-import { LearningProfilePage } from "./pages/LearningProfilePage";
-import { MasteryPage } from "./pages/MasteryPage";
-import { OperationsPage } from "./pages/OperationsPage";
+import { PersonalizedLearningPage } from "./pages/PersonalizedLearningPage";
 import { RoadmapPage } from "./pages/RoadmapPage";
 import { StudentProfilePage } from "./pages/StudentProfilePage";
-import { StudentCatalogPage } from "./pages/StudentCatalogPage";
 import { UsersPage } from "./pages/UsersPage";
+import { AdminSubjectsPage } from "./pages/AdminSubjectsPage";
 
 export default function App() {
   return (
@@ -25,22 +22,20 @@ export default function App() {
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
           <Route index element={<DashboardPage />} />
-          <Route path="exam-workflow" element={<ExamWorkflowPage />} />
 
           <Route element={<RequireRole allowed={["student"]} />}>
-            <Route path="catalog" element={<StudentCatalogPage />} />
             <Route path="student-profile" element={<StudentProfilePage />} />
-            <Route path="learning-profile" element={<LearningProfilePage />} />
-            <Route path="mastery" element={<MasteryPage />} />
+            <Route path="personalized/onboarding" element={<PersonalizedLearningPage mode="onboarding" />} />
+            <Route path="personalized/post-exam" element={<PersonalizedLearningPage mode="post_exam" />} />
             <Route path="roadmap" element={<RoadmapPage />} />
           </Route>
 
           <Route element={<RequireRole allowed={["admin"]} />}>
             <Route path="users" element={<UsersPage />} />
-            <Route path="operations" element={<OperationsPage />} />
+            <Route path="admin/subjects" element={<AdminSubjectsPage />} />
           </Route>
 
-          <Route element={<RequireRole allowed={["teacher", "admin"]} />}>
+          <Route element={<RequireRole allowed={["student", "admin"]} />}>
             <Route path="courses" element={<CourseManagementPage />} />
           </Route>
         </Route>

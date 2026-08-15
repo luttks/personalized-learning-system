@@ -1,17 +1,14 @@
 import {
   Activity,
-  BookOpenCheck,
   BookOpen,
-  BrainCircuit,
   ChevronDown,
   Gauge,
   GraduationCap,
   LogOut,
   Map,
   Menu,
-  ScanEye,
-  ServerCog,
   ShieldCheck,
+  Trophy,
   UserRound,
   Users,
   X,
@@ -34,14 +31,11 @@ interface NavItem {
 const navigation: NavItem[] = [
   { to: "/", label: "Tổng quan", icon: Gauge },
   { to: "/student-profile", label: "Hồ sơ học sinh", icon: UserRound, roles: ["student"] },
-  { to: "/catalog", label: "Catalog khóa học", icon: BookOpen, roles: ["student"] },
-  { to: "/learning-profile", label: "Hồ sơ học tập", icon: BrainCircuit, roles: ["student"] },
-  { to: "/mastery", label: "Mức độ thành thạo", icon: BookOpenCheck, roles: ["student"] },
-  { to: "/roadmap", label: "Lộ trình", icon: Map, roles: ["student"] },
-  { to: "/courses", label: "Khóa học và tài liệu", icon: BookOpen, roles: ["teacher", "admin"] },
-  { to: "/exam-workflow", label: "Bóc tách đề thi", icon: ScanEye },
+  { to: "/personalized/onboarding", label: "Bắt đầu học mới", icon: BookOpen, roles: ["student"] },
+  { to: "/personalized/post-exam", label: "Cải thiện sau thi", icon: Trophy, roles: ["student"] },
+  { to: "/roadmap", label: "Quản lý lộ trình", icon: Map, roles: ["student"] },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
-  { to: "/operations", label: "Vận hành", icon: ServerCog, roles: ["admin"] },
+  { to: "/admin/subjects", label: "Quản lý môn học", icon: BookOpen, roles: ["admin"] },
 ];
 
 export function AppShell() {

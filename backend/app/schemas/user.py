@@ -23,6 +23,16 @@ class UserCreate(BaseModel):
     role: UserRole = UserRole.STUDENT
 
 
+class UserUpdate(BaseModel):
+    full_name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=150,
+    )
+    role: UserRole | None = None
+    is_active: bool | None = None
+
+
 class UserResponse(BaseModel):
     id: UUID
     full_name: str
@@ -31,5 +41,6 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    has_completed_profile: bool = False
 
     model_config = ConfigDict(from_attributes=True)

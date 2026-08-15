@@ -2,7 +2,7 @@ import { ChevronLeft, ChevronRight, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
 import { getApiErrorMessage } from "../api/client";
-import { createUser, getUsers } from "../api/users";
+import { createUser, getUsers, updateUser, deleteUser, type UpdateUserPayload } from "../api/users";
 import {
   Button,
   EmptyState,
@@ -24,9 +24,8 @@ const initialForm: CreateUserPayload = {
   role: "student",
 };
 
-const roleTone: Record<UserRole, string> = {
+const roleColors: Record<UserRole, string> = {
   student: "bg-emerald-50 text-emerald-700",
-  teacher: "bg-sky-50 text-sky-700",
   admin: "bg-amber-50 text-amber-700",
 };
 
@@ -38,6 +37,8 @@ export function UsersPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+
+  const [editingUser, setEditingUser] = useState<User | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,6 +71,41 @@ export function UsersPage() {
     }
   }
 
+  async function handleUpdate(event: FormEvent) {
+    event.preventDefault();
+    if (!editingUser) return;
+    setSaving(true);
+    setError("");
+    setSuccess("");
+    try {
+      const payload: UpdateUserPayload = {
+        full_name: editingUser.full_name,
+        role: editingUser.role,
+        is_active: editingUser.is_active,
+      };
+      const updated = await updateUser(editingUser.id, payload);
+      setUsers((current) => current.map((u) => (u.id === updated.id ? updated : u)));
+      setSuccess(`Đã cập nhật thông tin tài khoản ${updated.email}.`);
+      setEditingUser(null);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể cập nhật thông tin."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete(user: User) {
+    setError("");
+    setSuccess("");
+    try {
+      await deleteUser(user.id);
+      setUsers((current) => current.filter((u) => u.id !== user.id));
+      setSuccess(`Đã xóa tài khoản ${user.email}.`);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể xóa người dùng."));
+    }
+  }
+
   return (
     <div className="space-y-7">
       <PageHeader
@@ -96,7 +132,6 @@ export function UsersPage() {
             <Field label="Vai trò">
               <Select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}>
                 <option value="student">Học sinh</option>
-                <option value="teacher">Giáo viên</option>
                 <option value="admin">Quản trị viên</option>
               </Select>
             </Field>
@@ -116,6 +151,7 @@ export function UsersPage() {
                     <th className="px-4 py-3 font-semibold">Vai trò</th>
                     <th className="px-4 py-3 font-semibold">Trạng thái</th>
                     <th className="px-4 py-3 font-semibold">Ngày tạo</th>
+                    <th className="px-4 py-3 font-semibold text-right">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -130,9 +166,25 @@ export function UsersPage() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${roleTone[user.role]}`}>{roleLabels[user.role]}</span></td>
+                      <td className="px-4 py-4"><span className={`rounded-full px-2 py-1 text-xs font-semibold ${roleColors[user.role]}`}>{roleLabels[user.role]}</span></td>
                       <td className="px-4 py-4"><span className="flex items-center gap-2 text-slate-600"><span className={`size-2 rounded-full ${user.is_active ? "bg-emerald-500" : "bg-red-500"}`} />{user.is_active ? "Hoạt động" : "Đã khóa"}</span></td>
                       <td className="px-4 py-4 text-slate-500">{new Date(user.created_at).toLocaleDateString("vi-VN")}</td>
+                      <td className="px-4 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => setEditingUser(user)}
+                            className="text-xs font-semibold text-amber-600 hover:text-amber-800 bg-amber-50 px-2 py-1 rounded"
+                          >
+                            Sửa
+                          </button>
+                          <button
+                            onClick={() => void handleDelete(user)}
+                            className="text-xs font-semibold text-red-600 hover:text-red-800 bg-red-50 px-2 py-1 rounded"
+                          >
+                            Xóa
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -149,6 +201,36 @@ export function UsersPage() {
           </div>
         </div>
       </section>
+
+      {/* Modal Sửa User */}
+      {editingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h3 className="mb-4 text-lg font-bold text-slate-900">Sửa thông tin người dùng</h3>
+            <form onSubmit={handleUpdate} className="space-y-4">
+              <Field label="Họ và tên">
+                <Input value={editingUser.full_name} onChange={(e) => setEditingUser({ ...editingUser, full_name: e.target.value })} required />
+              </Field>
+              <Field label="Vai trò">
+                <Select value={editingUser.role} onChange={(e) => setEditingUser({ ...editingUser, role: e.target.value as UserRole })}>
+                  <option value="student">Học sinh</option>
+                  <option value="admin">Quản trị viên</option>
+                </Select>
+              </Field>
+              <Field label="Trạng thái">
+                <Select value={editingUser.is_active ? "true" : "false"} onChange={(e) => setEditingUser({ ...editingUser, is_active: e.target.value === "true" })}>
+                  <option value="true">Hoạt động</option>
+                  <option value="false">Đã khóa</option>
+                </Select>
+              </Field>
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="ghost" onClick={() => setEditingUser(null)} type="button">Hủy</Button>
+                <Button type="submit" isLoading={saving}>Lưu thay đổi</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

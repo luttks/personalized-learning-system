@@ -36,6 +36,19 @@ from app.services.user_service import (
     EmailAlreadyExistsError,
 )
 
+async def _enrich_user_response(session: AsyncSession, user: User) -> UserResponse:
+    resp = UserResponse.model_validate(user)
+    if user.role.value == "student":
+        from sqlalchemy import select
+        from app.models.student_profile import StudentProfile
+        result = await session.execute(
+            select(StudentProfile.id).where(StudentProfile.user_id == user.id)
+        )
+        resp.has_completed_profile = result.scalar_one_or_none() is not None
+    else:
+        resp.has_completed_profile = True
+    return resp
+
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
@@ -78,7 +91,7 @@ async def register(
             detail="Email đã được sử dụng.",
         ) from error
 
-    return UserResponse.model_validate(user)
+    return await _enrich_user_response(session, user)
 
 
 @router.post(
@@ -114,13 +127,15 @@ async def login(
         ip_address=get_request_ip(request),
     )
 
+    enriched_user = await _enrich_user_response(session, user)
+
     return TokenResponse(
         access_token=access_token,
         refresh_token=refresh_token,
         expires_in=(
             settings.access_token_expire_minutes * 60
         ),
-        user=UserResponse.model_validate(user),
+        user=enriched_user,
     )
 
 
@@ -211,7 +226,6 @@ async def logout_all(
 )
 async def me(
     current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
 ) -> UserResponse:
-    return UserResponse.model_validate(
-        current_user
-    )
+    return await _enrich_user_response(session, current_user)

@@ -34,6 +34,12 @@ class ExplanationDepth(StrEnum):
     DETAILED = "detailed"
 
 
+class EducationLevel(StrEnum):
+    UNDER_UNIVERSITY = "under_university"
+    UNIVERSITY = "university"
+
+
+
 class StudentProfile(
     Base,
     UUIDPrimaryKeyMixin,
@@ -43,8 +49,9 @@ class StudentProfile(
 
     __table_args__ = (
         CheckConstraint(
-            "grade_level >= 1 AND grade_level <= 12",
-            name="grade_level_range",
+            "(education_level = 'under_university' AND grade_level >= 1 AND grade_level <= 12) OR "
+            "(education_level = 'university' AND grade_level >= 1 AND grade_level <= 7)",
+            name="grade_level_education_check",
         ),
         CheckConstraint(
             (
@@ -80,24 +87,21 @@ class StudentProfile(
         index=True,
     )
 
-    date_of_birth: Mapped[date | None] = mapped_column(
-        Date,
-        nullable=True,
+    education_level: Mapped[EducationLevel] = mapped_column(
+        Enum(
+            EducationLevel,
+            name="education_level",
+            values_callable=lambda enum: [
+                item.value for item in enum
+            ],
+        ),
+        default=EducationLevel.UNDER_UNIVERSITY,
+        nullable=False,
     )
 
     grade_level: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
-    )
-
-    school_name: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    city: Mapped[str | None] = mapped_column(
-        String(100),
-        nullable=True,
     )
 
     preferred_learning_mode: Mapped[LearningMode] = mapped_column(
@@ -140,19 +144,4 @@ class StudentProfile(
         Integer,
         default=45,
         nullable=False,
-    )
-
-    favourite_subjects: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    difficult_subjects: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    learning_notes: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
     )

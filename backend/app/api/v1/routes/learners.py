@@ -39,6 +39,7 @@ from app.services.roadmap_planner import (
     RoadmapCapacityError,
     build_roadmap,
 )
+from app.services.exam_service import crawl_resources
 
 router = APIRouter(prefix="/learners", tags=["Adaptive Learning"])
 
@@ -220,6 +221,31 @@ async def create_my_roadmap(
         ) from error
 
     roadmap, _ = await persist_roadmap(session, profile.id, plan)
+
+    # Crawl tài nguyên theo từng topic song song
+    import asyncio
+    topic_resources: dict[str, dict] = {}
+    if plan.items:
+        # Lấy danh sách topic duy nhất (tối đa 8 để không quá chậm)
+        unique_concepts = {}
+        for item in plan.items:
+            if item.concept_id not in unique_concepts:
+                unique_concepts[item.concept_id] = item.title
+        limited = dict(list(unique_concepts.items())[:8])
+
+        crawl_tasks = [
+            crawl_resources(f"{concept_name} {profile.subject or ''}")
+            for concept_name in limited.values()
+        ]
+        try:
+            results = await asyncio.gather(*crawl_tasks, return_exceptions=True)
+            for concept_id, result in zip(limited.keys(), results):
+                if isinstance(result, dict):
+                    topic_resources[concept_id] = result
+        except Exception:
+            pass
+
     return RoadmapCreateResponse(
-        **plan.model_dump(), id=roadmap.id, status=roadmap.status
+        **plan.model_dump(), id=roadmap.id, status=roadmap.status,
+        topic_resources=topic_resources,
     )

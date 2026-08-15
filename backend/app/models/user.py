@@ -8,7 +8,6 @@ from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 class UserRole(StrEnum):
     STUDENT = "student"
-    TEACHER = "teacher"
     ADMIN = "admin"
 
 

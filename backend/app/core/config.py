@@ -25,9 +25,18 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
 
     llm_api_key: str | None = None
+    llm_api_key2: str | None = None
+    llm_api_key3: str | None = None
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str | None = None
     llm_timeout_seconds: float = Field(default=45.0, gt=0, le=180)
+
+    # Gemini AI for Exam OCR
+    gemini_api_key: str | None = None
+    gemini_api_key2: str | None = None
+    gemini_api_key3: str | None = None
+    youtube_api_key: str | None = None
+    github_token: str | None = None
 
     uploads_dir: str = "uploads"
     document_max_upload_bytes: int = Field(default=150 * 1024 * 1024, gt=0)
@@ -55,6 +64,27 @@ class Settings(BaseSettings):
             for origin in self.cors_origins.split(",")
             if origin.strip()
         ]
+
+    @property
+    def llm_api_keys(self) -> list[str]:
+        """Danh sách tất cả Groq/LLM key hợp lệ (loại bỏ rỗng)."""
+        return [
+            k for k in [
+                self.llm_api_key,
+                self.llm_api_key2,
+                self.llm_api_key3,
+            ]
+            if k and k.strip()
+        ]
+
+    @property
+    def gemini_api_keys(self) -> list[str]:
+        """Danh sách tất cả Gemini key hợp lệ (loại bỏ rỗng)."""
+        valid = []
+        for k in [self.gemini_api_key, self.gemini_api_key2, self.gemini_api_key3]:
+            if k and k.strip():
+                valid.append(k)
+        return valid
 
 
 @lru_cache
