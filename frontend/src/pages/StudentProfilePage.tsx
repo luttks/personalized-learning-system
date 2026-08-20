@@ -24,8 +24,6 @@ import type { StudentProfilePayload } from "../types/student";
 const initialProfile: StudentProfilePayload = {
   education_level: "under_university",
   grade_level: 10,
-  preferred_learning_mode: "balanced",
-  explanation_depth: "medium",
   preferred_session_minutes: 30,
   study_days_per_week: 4,
   study_minutes_per_day: 45,
@@ -144,27 +142,6 @@ export function StudentProfilePage() {
                 />
               </Field>
             )}
-            <Field label="Cách học ưu tiên">
-              <Select
-                value={form.preferred_learning_mode}
-                onChange={(event) => update("preferred_learning_mode", event.target.value as StudentProfilePayload["preferred_learning_mode"])}
-              >
-                <option value="balanced">Cân bằng</option>
-                <option value="theory_first">Học lý thuyết trước</option>
-                <option value="practice_first">Thực hành trước</option>
-                <option value="step_by_step">Từng bước một</option>
-              </Select>
-            </Field>
-            <Field label="Độ chi tiết giải thích">
-              <Select
-                value={form.explanation_depth}
-                onChange={(event) => update("explanation_depth", event.target.value as StudentProfilePayload["explanation_depth"])}
-              >
-                <option value="short">Ngắn gọn</option>
-                <option value="medium">Vừa đủ</option>
-                <option value="detailed">Chi tiết</option>
-              </Select>
-            </Field>
           </div>
         </section>
 

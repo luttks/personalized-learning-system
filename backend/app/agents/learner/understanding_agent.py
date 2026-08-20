@@ -3,7 +3,6 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-import httpx
 from pydantic import ValidationError
 
 from app.schemas.learner import UnderstandingResult
@@ -20,58 +19,6 @@ class ChatCompletionProvider(Protocol):
         system_prompt: str,
         user_prompt: str,
     ) -> Mapping[str, Any]: ...
-
-
-class OpenAICompatibleProvider:
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        model: str,
-        timeout_seconds: float = 45,
-    ) -> None:
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-        self.model = model
-        self.timeout_seconds = timeout_seconds
-
-    async def complete_json(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> Mapping[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={
-                        "model": self.model,
-                        "temperature": 0,
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-                content = payload["choices"][0]["message"]["content"]
-                result = json.loads(content)
-        except (httpx.HTTPError, KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
-            raise LearnerUnderstandingError(
-                "LLM provider failed to return valid JSON"
-            ) from error
-
-        if not isinstance(result, dict):
-            raise LearnerUnderstandingError("LLM result must be a JSON object")
-        return result
 
 
 SYSTEM_PROMPT = """You extract a learner profile from the learner's own words.

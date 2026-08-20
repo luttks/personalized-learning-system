@@ -8,11 +8,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.student_profile import (
-    EducationLevel,
-    ExplanationDepth,
-    LearningMode,
-)
+from app.models.student_profile import EducationLevel
 
 
 class StudentProfileBase(BaseModel):
@@ -21,14 +17,6 @@ class StudentProfileBase(BaseModel):
     grade_level: int = Field(
         ge=1,
         le=12,
-    )
-
-    preferred_learning_mode: LearningMode = (
-        LearningMode.BALANCED
-    )
-
-    explanation_depth: ExplanationDepth = (
-        ExplanationDepth.MEDIUM
     )
 
     preferred_session_minutes: int = Field(
@@ -70,9 +58,6 @@ class StudentProfileUpdate(BaseModel):
         ge=1,
         le=12,
     )
-
-    preferred_learning_mode: LearningMode | None = None
-    explanation_depth: ExplanationDepth | None = None
 
     preferred_session_minutes: int | None = Field(
         default=None,

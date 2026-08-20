@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.services.temp_upload_service import sweep_stale_temp_files
 
 
 @asynccontextmanager
@@ -16,6 +17,9 @@ async def lifespan(
         f"Starting {settings.project_name} "
         f"in {settings.environment} mode"
     )
+    removed = sweep_stale_temp_files()
+    if removed:
+        print(f"Đã dọn {removed} file tạm quá hạn.")
 
     yield
 

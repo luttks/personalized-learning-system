@@ -16,11 +16,39 @@ import re
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=10)
+
+
+# ---------------------------------------------------------------------------
+# Ước lượng thời gian đọc tài liệu (Layer 0) — tính bằng code, KHÔNG dùng LLM để đếm/ước lượng
+# vì LLM vốn kém trong việc đếm số lượng chính xác. Bảng tốc độ đọc tham khảo theo nghiên cứu
+# phổ biến về tốc độ đọc trung bình của con người theo từng mục đích đọc.
+# ---------------------------------------------------------------------------
+
+READING_SPEED_WPM: dict[str, tuple[int, int]] = {
+    "survey": (200, 300),      # Đọc lướt / khảo sát
+    "general": (150, 200),     # Đọc hiểu đại trà
+    "technical": (70, 100),    # Đọc chuyên ngành / kỹ thuật
+    "deep_study": (20, 50),    # Học sâu (ghi chú, làm bài tập, phản biện, mã hóa)
+}
+
+
+def estimate_reading_time(text: str) -> dict[str, Any]:
+    """Ước lượng khoảng thời gian (phút) một người trung bình cần để xử lý tài liệu, theo 4 mục
+    đích đọc khác nhau. Đây là ước lượng TỔNG QUÁT (chưa cá nhân hóa) — dùng làm mốc tham chiếu
+    ban đầu cho các bước cá nhân hóa sau."""
+    word_count = len(text.split())
+    result: dict[str, Any] = {"word_count": word_count}
+    for key, (wpm_low, wpm_high) in READING_SPEED_WPM.items():
+        # Tốc độ đọc CÀNG CAO thì thời gian CÀNG THẤP — nên min dùng wpm_high, max dùng wpm_low.
+        result[f"{key}_minutes_min"] = round(word_count / wpm_high) if word_count else 0
+        result[f"{key}_minutes_max"] = round(word_count / wpm_low) if word_count else 0
+    return result
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -33,7 +61,11 @@ _GEMINI_OCR_PROMPT = (
     "Bạn là một mô hình phân tích và bóc tách tài liệu giáo dục. "
     "Hãy phân tích hình ảnh/tài liệu được cung cấp. "
     "PHẢI TRẢ VỀ KẾT QUẢ DƯỚI DẠNG ĐỊNH DẠNG JSON theo cấu trúc sau: "
-    '{"exam_content": "Trích xuất TOÀN BỘ nội dung thành Markdown kết hợp LaTeX. '
+    '{"exam_content": "Trích xuất TOÀN BỘ nội dung thành Markdown kết hợp LaTeX, LẦN LƯỢT theo '
+    "ĐÚNG THỨ TỰ TỪNG TRANG, không bỏ sót trang nào. "
+    "QUAN TRỌNG: nếu trong tài liệu có trang mục lục / danh mục / bìa, hãy chép qua thật nhanh rồi "
+    "BẮT BUỘC tiếp tục chép đầy đủ nội dung TẤT CẢ các trang còn lại phía sau — TUYỆT ĐỐI KHÔNG được "
+    "dừng lại hay coi như đã xong chỉ vì đã gặp trang mục lục. "
     "Giữ nguyên cấu trúc tài liệu. "
     "Tất cả công thức toán học PHẢI bọc trong $...$ hoặc $$...$$. "
     'Đảm bảo cú pháp LaTeX chính xác."}'
@@ -97,6 +129,27 @@ def _parse_json_safely(raw: str) -> Any:
         logger.warning(f"JSONDecodeError in _parse_json_safely: {e}. Raw text: {raw[:200]}...")
         # Fallback cuối cùng nếu vẫn lỗi
         raise ValueError(f"Không thể parse JSON từ AI: {e}")
+
+
+def _sample_text_for_classification(raw_text: str, max_chars: int = 3000) -> str:
+    """Lấy mẫu văn bản để đưa vào prompt phân loại môn học/cấu trúc tài liệu.
+
+    Với tài liệu dài, chỉ lấy `max_chars` ký tự đầu tiên rất dễ chỉ rơi vào trang bìa/mục lục
+    (đặc biệt với sách giáo khoa), khiến AI phân loại nhầm là "chỉ có mục lục, không có nội dung
+    giảng dạy". Vì vậy lấy thêm một đoạn trích ở khoảng giữa tài liệu để đảm bảo luôn thấy được
+    nội dung giảng dạy thực sự, không chỉ phần mở đầu.
+    """
+    if len(raw_text) <= max_chars:
+        return raw_text
+
+    head_chars = max_chars // 2
+    mid_start = len(raw_text) * 2 // 5
+    mid_chars = max_chars - head_chars
+    return (
+        raw_text[:head_chars]
+        + "\n\n[... trích đoạn giữa tài liệu ...]\n\n"
+        + raw_text[mid_start : mid_start + mid_chars]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -197,22 +250,30 @@ async def run_gemini_ocr(file_bytes: bytes, suffix: str, api_key: str) -> str:
     }
     mime = mime_map.get(suffix, "image/jpeg")
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            contents=[
-                genai.types.Part.from_bytes(data=file_bytes, mime_type=mime),
-                _GEMINI_OCR_PROMPT,
-            ],
-            config=genai.types.GenerateContentConfig(response_mime_type="application/json"),
-        )
-        if response and response.text:
-            return response.text
-    except errors.APIError as e:  # type: ignore[attr-defined]
-        msg = str(e)
-        if "API_KEY_INVALID" in msg or "API key not valid" in msg:
-            raise ValueError(f"GEMINI_API_KEY không hợp lệ: {msg[:100]}")
-        raise
+    last_err: Exception | None = None
+    for model_name in ("gemini-3.1-flash-lite",):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=[
+                    genai.types.Part.from_bytes(data=file_bytes, mime_type=mime),
+                    _GEMINI_OCR_PROMPT,
+                ],
+                config=genai.types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            if response and response.text:
+                return response.text
+        except errors.APIError as e:  # type: ignore[attr-defined]
+            msg = str(e)
+            if "API_KEY_INVALID" in msg or "API key not valid" in msg:
+                raise ValueError(f"GEMINI_API_KEY không hợp lệ: {msg[:100]}")
+            logger.warning(f"Gemini OCR model '{model_name}' lỗi ({msg[:80]}), thử model dự phòng...")
+            last_err = e
+        except Exception as e:
+            logger.warning(f"Gemini OCR model '{model_name}' lỗi ({str(e)[:80]}), thử model dự phòng...")
+            last_err = e
+    if last_err:
+        raise last_err
     raise RuntimeError("Không nhận được phản hồi từ Gemini API.")
 
 
@@ -263,6 +324,67 @@ async def extract_text_from_file(
             logger.warning(f"PyMuPDF lỗi ({e}), chuyển sang Gemini OCR...")
 
     # 2. Image hoặc PDF scan — dùng Gemini OCR
+    batches = _split_pdf_into_batches(file_bytes) if suffix == ".pdf" else [file_bytes]
+
+    if len(batches) == 1:
+        return await _run_gemini_ocr_with_key_fallback(batches[0], suffix, gemini_api_keys), "gemini"
+
+    # Tài liệu nhiều trang: OCR từng phần (đồng thời, giới hạn số lượng) rồi nối lại theo thứ tự.
+    # Nếu bắt Gemini trích xuất TOÀN BỘ nội dung của tài liệu rất dài trong 1 lần gọi duy nhất, model
+    # có xu hướng "lười" — chỉ tóm tắt qua mục lục rồi dừng thay vì chép hết nội dung từng bài học.
+    semaphore = asyncio.Semaphore(4)
+
+    async def _ocr_one_batch(batch_bytes: bytes) -> str:
+        async with semaphore:
+            return await _run_gemini_ocr_with_key_fallback(batch_bytes, suffix, gemini_api_keys)
+
+    results = await asyncio.gather(
+        *(_ocr_one_batch(b) for b in batches), return_exceptions=True
+    )
+
+    for result in results:
+        if isinstance(result, ValueError):
+            raise result  # Key không hợp lệ → raise ngay
+
+    texts = [r for r in results if isinstance(r, str) and r.strip()]
+    if not texts:
+        errors = [r for r in results if isinstance(r, Exception)]
+        if errors:
+            raise RuntimeError(f"Lỗi OCR (Quota/Network): {errors[0]}")
+        raise RuntimeError("Không thể trích xuất nội dung từ file.")
+
+    return "\n\n".join(texts), "gemini"
+
+
+def _split_pdf_into_batches(file_bytes: bytes, pages_per_batch: int = 15) -> list[bytes]:
+    """Chia PDF nhiều trang thành các batch nhỏ (mỗi batch là 1 PDF con) để Gemini OCR đầy đủ
+    từng phần, thay vì phải xử lý toàn bộ tài liệu lớn trong một lần gọi duy nhất."""
+    import fitz  # type: ignore[import]
+
+    src = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        page_count = src.page_count
+        if page_count <= pages_per_batch:
+            return [file_bytes]
+
+        batches: list[bytes] = []
+        for start in range(0, page_count, pages_per_batch):
+            end = min(start + pages_per_batch, page_count) - 1
+            sub = fitz.open()
+            try:
+                sub.insert_pdf(src, from_page=start, to_page=end)
+                batches.append(sub.tobytes())
+            finally:
+                sub.close()
+        return batches
+    finally:
+        src.close()
+
+
+async def _run_gemini_ocr_with_key_fallback(
+    file_bytes: bytes, suffix: str, gemini_api_keys: list[str]
+) -> str:
+    """OCR một phần tài liệu (batch), xoay qua các key nếu lỗi. Trả về raw_text đã trích xuất."""
     last_err: Exception | None = None
     for key in gemini_api_keys:
         if not key or not key.strip():
@@ -272,7 +394,7 @@ async def extract_text_from_file(
             data = _parse_json_safely(ocr_json)
             raw_text = data.get("exam_content", "")
             if raw_text.strip():
-                return raw_text, "gemini"
+                return raw_text
         except ValueError:
             raise  # Key không hợp lệ → raise ngay
         except Exception as e:
@@ -285,86 +407,9 @@ async def extract_text_from_file(
 
 
 # ---------------------------------------------------------------------------
-# Groq / OpenAI-compatible AI calls
+# LLM calls — ủy quyền cho app.core.llm_client.LLMClient (client hợp nhất, dùng chung
+# cho toàn backend thay vì mỗi service tự viết lại logic Gemini/Groq fallback).
 # ---------------------------------------------------------------------------
-
-async def _call_groq(
-    prompt: str,
-    api_key: str,
-    base_url: str,
-    model: str,
-    timeout: float = 60.0,
-    expect_json: bool = True,
-) -> str:
-    """Gọi Groq (OpenAI-compatible) với 1 key cụ thể."""
-    import httpx
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Bạn là chuyên gia giáo dục AI. "
-                    + ("Trả về JSON hợp lệ, KHÔNG có markdown code block, KHÔNG có text thừa." if expect_json else "")
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.3,
-        "max_tokens": 4000,
-    }
-    if expect_json:
-        body["response_format"] = {"type": "json_object"}
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=body)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-
-async def _call_gemini_text(
-    prompt: str,
-    api_key: str,
-    expect_json: bool = True,
-) -> str:
-    """Gọi Gemini (Google) để phân tích text."""
-    from google import genai  # type: ignore[import]
-    from google.genai import errors  # type: ignore[import]
-
-    client = genai.Client(api_key=api_key)
-    
-    sys_instruction = (
-        "Bạn là chuyên gia giáo dục AI. "
-        + ("Trả về JSON hợp lệ, KHÔNG có markdown code block, KHÔNG có text thừa." if expect_json else "")
-    )
-    
-    config = genai.types.GenerateContentConfig(
-        system_instruction=sys_instruction,
-        temperature=0.3,
-    )
-    if expect_json:
-        config.response_mime_type = "application/json"
-
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            contents=prompt,
-            config=config,
-        )
-        if response and response.text:
-            return response.text
-        raise RuntimeError("Phản hồi từ Gemini rỗng.")
-    except errors.APIError as e:  # type: ignore[attr-defined]
-        msg = str(e)
-        if "API_KEY_INVALID" in msg or "API key not valid" in msg:
-            raise ValueError(f"GEMINI_API_KEY không hợp lệ: {msg[:100]}")
-        raise
-
 
 async def _call_llm_with_fallback(
     prompt: str,
@@ -375,37 +420,18 @@ async def _call_llm_with_fallback(
     timeout: float = 60.0,
     expect_json: bool = True,
 ) -> str:
-    """
-    Ưu tiên dùng Gemini (nếu có key).
-    Nếu Gemini fail, fallback sang Groq (với danh sách key).
-    """
-    last_err: Exception | None = None
-    
-    # 1. Thử Gemini trước
-    for i, key in enumerate(gemini_keys):
-        try:
-            result = await _call_gemini_text(prompt, key, expect_json)
-            logger.info(f"LLM rotation: thành công với Gemini key #{i+1}")
-            return result
-        except Exception as e:
-            err_str = str(e)
-            logger.warning(f"Gemini key #{i+1} lỗi: {err_str[:80]}, thử tiếp...")
-            last_err = e
-            continue
+    """Ưu tiên Gemini (xoay key) → fallback Groq (xoay key). Giữ chữ ký cũ để không phải sửa
+    hàng chục call site trong file này; phần triển khai nằm ở `LLMClient`."""
+    from app.core.llm_client import LLMClient
 
-    # 2. Nếu Gemini fail hết, thử Groq
-    for i, key in enumerate(groq_keys):
-        try:
-            result = await _call_groq(prompt, key, groq_base_url, groq_model, timeout, expect_json)
-            logger.info(f"LLM rotation: thành công với Groq key #{i+1}")
-            return result
-        except Exception as e:
-            err_str = str(e)
-            logger.warning(f"Groq key #{i+1} lỗi: {err_str[:80]}, thử tiếp...")
-            last_err = e
-            continue
-
-    raise RuntimeError(f"Tất cả Gemini và Groq keys đều thất bại. Lỗi cuối: {last_err}")
+    client = LLMClient(
+        gemini_api_keys=gemini_keys,
+        groq_api_keys=groq_keys,
+        groq_base_url=groq_base_url,
+        groq_model=groq_model,
+        timeout_seconds=timeout,
+    )
+    return await client.complete_text(prompt, expect_json=expect_json)
 
 
 def _detect_code_related(text: str) -> bool:
@@ -459,6 +485,9 @@ async def analyze_document_for_learning(
             "ocr_engine": "error",
             "not_learning_message": f"Không thể đọc file: {e}",
             "document_level": None,
+            "has_clear_structure": False,
+            "structure_reason": None,
+            "reading_time": estimate_reading_time(""),
         }
 
     if not raw_text or len(raw_text.strip()) < 30:
@@ -473,6 +502,9 @@ async def analyze_document_for_learning(
             "ocr_engine": ocr_engine,
             "not_learning_message": "Tài liệu trống hoặc không thể đọc. Hãy thử file khác (PDF, DOCX, TXT, ảnh rõ nét).",
             "document_level": None,
+            "has_clear_structure": False,
+            "structure_reason": None,
+            "reading_time": estimate_reading_time(""),
         }
 
     # Bước 2: AI phân tích nội dung
@@ -495,21 +527,28 @@ async def analyze_document_for_learning(
             "ocr_engine": ocr_engine,
             "not_learning_message": None,
             "document_level": None,
+            "has_clear_structure": True,
+            "structure_reason": None,
+            "reading_time": estimate_reading_time(raw_text),
         }
+
+    classification_sample = _sample_text_for_classification(raw_text)
 
     prompt = f"""Bạn là chuyên gia giáo dục. Hãy phân tích đoạn tài liệu sau và trả về JSON.
 
-NỘI DUNG TÀI LIỆU (tối đa 3000 ký tự đầu):
+NỘI DUNG TÀI LIỆU (trích từ đầu và từ giữa tài liệu để tránh chỉ thấy trang bìa/mục lục):
 ---
-{raw_text[:3000]}
+{classification_sample}
 ---
 
 Trả về JSON với đúng cấu trúc sau (chỉ JSON, không có text ngoài):
 {{
-  "is_learning_doc": true hoặc false (true nếu đây là tài liệu giáo dục/học tập),
-  "not_learning_reason": "Lý do ngắn gọn nếu không phải tài liệu học, để trống nếu là tài liệu học",
+  "is_learning_doc": true hoặc false — xem tiêu chí chi tiết bên dưới,
+  "not_learning_reason": "Lý do ngắn gọn nếu is_learning_doc=false, để trống nếu true",
+  "has_clear_structure": true hoặc false — xem tiêu chí chi tiết bên dưới,
+  "structure_reason": "Nếu has_clear_structure=false, giải thích ngắn gọn tại sao, để trống nếu true",
   "subject": "Tên môn học/chủ đề cụ thể (VD: Giải tích 1, Lập trình Python, Ngữ văn 12...)",
-  "topics": ["Chủ đề 1", "Chủ đề 2", "Chủ đề 3"],
+  "topics": ["Phần 1", "Phần 2", "Phần 3"] (các đơn vị nội dung theo ĐÚNG thứ tự xuất hiện trong tài liệu — đây sẽ dùng làm mục lục lộ trình; đặt tên theo đúng cách tài liệu tự gọi, xem hướng dẫn bên dưới),
   "suggested_goals": [
     "Mục tiêu cụ thể 1 (VD: Nắm vững lý thuyết giới hạn và đạo hàm)",
     "Mục tiêu cụ thể 2 (VD: Luyện thi cuối kỳ đạt ≥ 7.0 điểm)",
@@ -521,10 +560,40 @@ Trả về JSON với đúng cấu trúc sau (chỉ JSON, không có text ngoài
   "document_level": số_nguyên (Dự đoán trình độ học vấn của tài liệu này trên thang điểm 1-19. Cấp 1-12 tương ứng lớp 1-12. Đại học năm 1-7 tương ứng 13-19. Nếu không rõ, trả về null)
 }}
 
+TIÊU CHÍ "is_learning_doc" (đánh giá NGHIÊM TÚC — đây là cổng chặn quan trọng nhất, chỉ true khi
+người học THỰC SỰ có thể ĐỌC và HỌC ĐƯỢC KIẾN THỨC MỚI từ chính nội dung tài liệu):
+- true CHỈ KHI đây là tài liệu giảng dạy/truyền đạt kiến thức thực sự — giáo trình, sách, slide bài
+  giảng, ghi chú bài học, tài liệu tổng hợp lý thuyết... — có nội dung GIẢNG GIẢI kiến thức, không chỉ
+  liệt kê tiêu đề.
+- false nếu rơi vào BẤT KỲ trường hợp nào sau (ghi rõ trường hợp nào trong "not_learning_reason"):
+  (a) Đây là ĐỀ THI / BÀI KIỂM TRA / bộ câu hỏi trắc nghiệm hoặc tự luận — kể cả khi được chia theo
+      chủ đề/chương rõ ràng. Đề thi dùng để KIỂM TRA kiến thức đã có, không phải tài liệu để HỌC kiến
+      thức mới; nó thuộc bước "Minh chứng năng lực" ở giai đoạn sau của quy trình, KHÔNG phải tài liệu
+      học tập ở bước này.
+  (b) Tài liệu chỉ là khung/mục lục/danh sách tiêu đề chương-bài mà KHÔNG có nội dung giảng dạy thực
+      chất bên trong (VD: chỉ có "Chương 1: Giới hạn", "Chương 2: Đạo hàm"... mà không có đoạn văn nào
+      giải thích kiến thức) — có cấu trúc nhưng không có gì để học được, vẫn phải false.
+  (c) Nội dung không liên quan đến giáo dục (ảnh cá nhân, văn bản ngẫu nhiên, thiên nhiên...).
+  (d) Tài liệu trống hoặc gần như trống.
+
+HƯỚNG DẪN XÁC ĐỊNH "topics" (KHÔNG chỉ giới hạn ở "chương"):
+Tài liệu có thể tự tổ chức nội dung theo nhiều cách khác nhau — chương ("Chương 1"), bài ("Bài 2"),
+phần ("Phần III"), giai đoạn, chủ đề theo thứ tự trình bày, mục đánh số... Hãy nhận diện ĐÚNG theo
+cách tài liệu này thực sự tổ chức (không cố ép về "chương" nếu tài liệu không dùng từ đó), và đặt tên
+"topics" theo đúng nhãn/thứ tự đó.
+
+TIÊU CHÍ "has_clear_structure" (chỉ đánh giá khi is_learning_doc=true; đây là điều kiện thứ hai, BẮT
+BUỘC để tạo lộ trình học chia giai đoạn):
+- true: các đơn vị nội dung giảng dạy trong tài liệu xuất hiện theo một TRÌNH TỰ / TUẦN TỰ hợp lý (dù
+  không nhất thiết gắn nhãn "chương" — có thể là bài, phần, giai đoạn, mục đánh số, hoặc chuỗi chủ đề
+  được trình bày lần lượt theo mạch logic rõ ràng).
+- false: tài liệu học được (is_learning_doc=true) nhưng nội dung viết liền mạch không tách được thành
+  các phần độc lập có thứ tự rõ ràng (VD: một bài luận/ghi chú dài không chia đoạn).
+- Không đánh giá dựa trên việc tài liệu CÓ dùng từ "chương" hay không — chỉ đánh giá dựa trên việc nó
+  CÓ hay KHÔNG có một trình tự nội dung rõ ràng, tuần tự, có thể chia giai đoạn học được.
+
 Lưu ý quan trọng:
-- suggested_goals phải đặc trưng cho môn học này, KHÔNG phải câu chung chung
-- Nếu là đề thi thì is_learning_doc=true, gợi ý mục tiêu ôn luyện
-- Nếu là ảnh không liên quan học tập (ảnh cá nhân, thiên nhiên...) thì is_learning_doc=false"""
+- suggested_goals phải đặc trưng cho môn học này, KHÔNG phải câu chung chung"""
 
     try:
         raw = await _call_llm_with_fallback(
@@ -535,6 +604,7 @@ Lưu ý quan trọng:
         is_learning = bool(data.get("is_learning_doc", True))
         not_learning_reason = data.get("not_learning_reason", "")
         is_code_related = bool(data.get("is_code_related", False)) or is_code_related_quick
+        has_clear_structure = bool(data.get("has_clear_structure", False))
 
         return {
             "is_learning_doc": is_learning,
@@ -555,6 +625,9 @@ Lưu ý quan trọng:
                 else None
             ),
             "document_level": data.get("document_level"),
+            "has_clear_structure": has_clear_structure,
+            "structure_reason": data.get("structure_reason") or None,
+            "reading_time": estimate_reading_time(raw_text),
         }
     except Exception as e:
         logger.warning(f"Document analysis AI failed: {e}, using fallback")
@@ -574,6 +647,9 @@ Lưu ý quan trọng:
             "ocr_engine": ocr_engine,
             "not_learning_message": None,
             "document_level": None,
+            "has_clear_structure": True,
+            "structure_reason": None,
+            "reading_time": estimate_reading_time(raw_text),
         }
 
 
@@ -978,6 +1054,230 @@ async def crawl_resources(query: str) -> dict[str, Any]:
 # Roadmap Generator (Inline Roadmap — sinh lộ trình học tập)
 # ---------------------------------------------------------------------------
 
+def _next_study_date(current: date, days_per_week: int) -> date:
+    """Ngày học kế tiếp — quy ước: days_per_week=N nghĩa là N ngày đầu tuần (Thứ 2..) là ngày học,
+    giống hệt quy ước đã dùng trong roadmap_planner.py để nhất quán trong toàn hệ thống."""
+    allowed_weekdays = set(range(max(1, min(7, days_per_week))))
+    candidate = current
+    while candidate.weekday() not in allowed_weekdays:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _schedule_roadmap_days(
+    phases: list[dict],
+    minutes_per_day: int,
+    days_per_week: int,
+    start_date: date,
+) -> tuple[list[dict], date]:
+    """Xếp từng chủ đề (đã có estimated_minutes từ LLM) vào các ngày học cụ thể — xác định 100%
+    bằng toán, KHÔNG dùng LLM để đoán tuần/ngày. Trả về (phases đã gắn "days", ngày kết thúc thực tế)."""
+    current_date = _next_study_date(start_date, days_per_week)
+    minutes_left_today = minutes_per_day
+    day_number = 1
+    scheduled_phases: list[dict] = []
+
+    for phase in phases:
+        raw_topics = phase.get("topics", [])
+        days_map: dict[str, dict] = {}
+        day_order: list[str] = []
+
+        for raw_topic in raw_topics:
+            if isinstance(raw_topic, dict):
+                title = str(raw_topic.get("title", "")).strip()
+                why = str(raw_topic.get("why", "")).strip()
+                activities = str(raw_topic.get("activities", "")).strip()
+                try:
+                    remaining = max(10, int(raw_topic.get("estimated_minutes", 30)))
+                except (TypeError, ValueError):
+                    remaining = 30
+            else:
+                title, why, activities, remaining = str(raw_topic), "", "", 30
+            if not title:
+                continue
+
+            while remaining > 0:
+                if minutes_left_today <= 0:
+                    day_number += 1
+                    current_date = _next_study_date(current_date + timedelta(days=1), days_per_week)
+                    minutes_left_today = minutes_per_day
+
+                date_iso = current_date.isoformat()
+                if date_iso not in days_map:
+                    days_map[date_iso] = {"day_number": day_number, "date": date_iso, "topics": [], "total_minutes": 0}
+                    day_order.append(date_iso)
+
+                chunk = min(remaining, minutes_left_today)
+                days_map[date_iso]["topics"].append({"title": title, "why": why, "activities": activities, "minutes": chunk})
+                days_map[date_iso]["total_minutes"] += chunk
+                remaining -= chunk
+                minutes_left_today -= chunk
+
+        scheduled_phases.append({
+            **{k: v for k, v in phase.items() if k != "topics"},
+            "days": [days_map[d] for d in day_order],
+        })
+
+    return scheduled_phases, current_date
+
+
+def _candidate_study_dates(start_date: date, days_per_week: int, count: int) -> list[date]:
+    """Danh sách N ngày học hợp lệ kế tiếp — thuần cơ học lịch (ngày nào là ngày học theo
+    days_per_week), KHÔNG mang tính cá nhân hóa nên tính bằng code; LLM chỉ chọn xếp nội dung gì
+    vào ngày nào trong số ứng viên này, không tự tính lịch (tránh LLM tính sai ngày tháng)."""
+    dates: list[date] = []
+    current = _next_study_date(start_date, days_per_week)
+    while len(dates) < count:
+        dates.append(current)
+        current = _next_study_date(current + timedelta(days=1), days_per_week)
+    return dates
+
+
+_WEEKDAY_NAMES_VI = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+
+
+async def _schedule_phase_days_llm(
+    phase: dict,
+    subject: str,
+    candidate_dates: list[date],
+    minutes_per_day: int,
+    reading_time: dict | None,
+    gemini_api_keys: list[str],
+    llm_api_keys: list[str],
+    llm_base_url: str,
+    llm_model: str,
+) -> list[dict] | None:
+    """Lớp 2: để CHÍNH LLM quyết định lịch học từng ngày cho MỘT giai đoạn — không xếp cứng bằng
+    thuật toán bin-packing vì như vậy sẽ mất tính cá nhân hóa (thời gian mỗi ngày co giãn theo độ
+    khó, không cố định bằng đúng minutes_per_day). Trả về None nếu LLM lỗi/không parse được, để
+    hàm gọi tự chuyển sang xếp lịch dự phòng bằng thuật toán cho riêng giai đoạn đó."""
+    topics = phase.get("topics", [])
+    if not topics:
+        return []
+
+    topics_str = "\n".join(
+        f"- {t.get('title', '')}: {t.get('why', '')} (ước lượng tổng ~{t.get('estimated_minutes', 30)} phút, gợi ý hoạt động: {t.get('activities', '')})"
+        for t in topics if isinstance(t, dict) and t.get("title")
+    )
+    candidates_str = "\n".join(
+        f"{i + 1}. {d.isoformat()} ({_WEEKDAY_NAMES_VI[d.weekday()]})"
+        for i, d in enumerate(candidate_dates)
+    )
+    reading_context = ""
+    if reading_time:
+        lo = reading_time.get("deep_study_minutes_min", 0)
+        hi = reading_time.get("deep_study_minutes_max", 0)
+        if lo or hi:
+            reading_context = (
+                f"\nTHAM KHẢO CHUNG (số liệu thống kê trung bình, CHƯA cá nhân hóa): trung bình một "
+                f"người cần khoảng {lo}-{hi} phút để học sâu (đọc + ghi chú + làm bài tập) toàn bộ tài "
+                f"liệu gốc. Đây chỉ là mốc tham chiếu — hãy CÂN NHẮC thực tế của giai đoạn này (có phần "
+                f"khó/dễ khác nhau, người học có thể đang hổng kiến thức ở đây) để phân bổ hợp lý, KHÔNG "
+                f"áp dụng máy móc.\n"
+            )
+
+    prompt = f"""Bạn là chuyên gia giáo dục AI, lên lịch học CHI TIẾT TỪNG NGÀY cho MỘT giai đoạn
+trong lộ trình học tập cá nhân hóa. Đây là bước quan trọng nhất để lộ trình thực sự "cá nhân hóa
+đến cực điểm" — đừng làm qua loa, đừng lặp lại công thức giống nhau giữa các ngày.
+
+MÔN HỌC: {subject}
+GIAI ĐOẠN: {phase.get('title', '')}
+VÌ SAO GIAI ĐOẠN NÀY: {phase.get('why', '')}
+{reading_context}
+CÁC CHỦ ĐỀ CẦN XẾP LỊCH (theo đúng thứ tự; ước lượng phút TỔNG CỘNG và gợi ý hoạt động chỉ là điểm
+khởi đầu, bạn có thể điều chỉnh theo đánh giá thực tế của bạn về độ khó):
+{topics_str}
+
+NHỊP HỌC TRUNG BÌNH NGƯỜI DÙNG ĐẶT: {minutes_per_day} phút/ngày — đây là con số TRUNG BÌNH THAM
+KHẢO, KHÔNG PHẢI giới hạn cứng cho từng ngày riêng lẻ. Ngày học nội dung khó/nặng, cần tập trung cao
+độ, HÃY DÀNH NHIỀU THỜI GIAN HƠN mức trung bình (có thể vượt, nhưng đừng vượt quá lố — khoảng tối đa
+~1.5 lần); ngày học nội dung nhẹ/ôn tập thì có thể ÍT HƠN. Tổng thể xoay vòng quanh mức trung bình
+trong cả giai đoạn, không áp cứng đúng con số đó cho mọi ngày.
+
+DANH SÁCH NGÀY HỌC HỢP LỆ (CHỈ được dùng các ngày có trong danh sách này, theo ĐÚNG THỨ TỰ xuất
+hiện, không bắt buộc dùng hết — dừng lại ngay khi đã xếp xong toàn bộ nội dung giai đoạn):
+{candidates_str}
+
+YÊU CẦU BẮT BUỘC:
+1. Mỗi ngày PHẢI có "note" — nhận xét/ghi chú NGẮN GỌN, RIÊNG BIỆT cho đúng ngày đó (nhịp học, độ
+   khó, tâm lý cần chuẩn bị, mối liên hệ với ngày trước...). TUYỆT ĐỐI không lặp lại y nguyên một
+   câu note ở nhiều ngày khác nhau.
+2. Mỗi chủ đề trong ngày PHẢI có "location_hint": vị trí ước lượng của nội dung này trong tài liệu
+   gốc (VD: "đầu tài liệu", "khoảng giữa, ngay sau phần X", "gần cuối tài liệu") để người học mở
+   đúng chỗ trong tài liệu ra xem lại.
+3. Mỗi chủ đề PHẢI có "resource_type": "video" (nên tìm video bài giảng ngoài), "exercise" (ngày
+   luyện bài tập, nên tìm thêm bài tập), "reading" (chỉ cần đọc tài liệu, không cần tài nguyên
+   ngoài), hoặc "mixed".
+4. Một chủ đề có thể trải dài nhiều ngày liên tiếp nếu nội dung nhiều — mỗi ngày ghi rõ phần nào
+   của chủ đề đó đang được học (VD ngày 1: khái niệm cơ bản; ngày 2: bài tập vận dụng).
+
+Trả về JSON (chỉ JSON, không markdown):
+{{
+  "days": [
+    {{
+      "date": "YYYY-MM-DD (CHỈ phần ngày tháng năm, KHÔNG kèm tên thứ hay chữ nào khác — lấy đúng 10 ký tự từ danh sách ngày hợp lệ ở trên)",
+      "note": "Nhận xét riêng cho ngày này",
+      "topics": [
+        {{"title": "...", "why": "...", "activities": "...", "minutes": 60, "resource_type": "video", "location_hint": "..."}}
+      ]
+    }}
+  ]
+}}"""
+
+    raw = await _call_llm_with_fallback(
+        prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=75.0
+    )
+    result = _parse_json_safely(raw)
+    raw_days = result.get("days")
+    if not raw_days:
+        return None
+
+    candidate_set = {d.isoformat() for d in candidate_dates}
+    seen_dates: set[str] = set()
+    cleaned_days: list[dict] = []
+    for d in raw_days:
+        if not isinstance(d, dict):
+            continue
+        # LLM đôi khi kèm thêm thứ trong ngày (VD "2026-08-19 (Thứ Tư)") dù đã dặn chỉ lấy nguyên
+        # văn ngày — trích riêng phần YYYY-MM-DD cho khoan dung thay vì so khớp chuỗi tuyệt đối.
+        date_match = re.search(r"\d{4}-\d{2}-\d{2}", str(d.get("date", "")))
+        date_str = date_match.group(0) if date_match else ""
+        if date_str not in candidate_set or date_str in seen_dates:
+            continue
+        seen_dates.add(date_str)
+
+        day_topics = []
+        for t in d.get("topics", []):
+            if not isinstance(t, dict) or not str(t.get("title", "")).strip():
+                continue
+            try:
+                minutes = max(5, int(t.get("minutes", 30)))
+            except (TypeError, ValueError):
+                minutes = 30
+            resource_type = t.get("resource_type")
+            if resource_type not in ("video", "exercise", "reading", "mixed"):
+                resource_type = "mixed"
+            day_topics.append({
+                "title": str(t.get("title", "")).strip(),
+                "why": str(t.get("why", "")).strip(),
+                "activities": str(t.get("activities", "")).strip(),
+                "minutes": minutes,
+                "resource_type": resource_type,
+                "location_hint": str(t.get("location_hint", "")).strip(),
+            })
+        if not day_topics:
+            continue
+        cleaned_days.append({
+            "date": date_str,
+            "note": str(d.get("note", "")).strip(),
+            "topics": day_topics,
+            "total_minutes": sum(t["minutes"] for t in day_topics),
+        })
+
+    cleaned_days.sort(key=lambda x: x["date"])
+    return cleaned_days or None
+
+
 async def generate_learning_roadmap(
     subject: str,
     weak_topics: list[str],
@@ -989,10 +1289,26 @@ async def generate_learning_roadmap(
     llm_api_keys: list[str],
     llm_base_url: str,
     llm_model: str,
+    learned_topics: list[str] | None = None,
+    days_per_week: int = 7,
+    evidence_summary: str | None = None,
+    curriculum_position: dict | None = None,  # {"topic": str, "on_track": bool}
+    deadline: str | None = None,  # ISO date YYYY-MM-DD
+    start_date: str | None = None,  # ISO date YYYY-MM-DD — mặc định hôm nay nếu không cung cấp
+    reading_time: dict | None = None,  # Kết quả estimate_reading_time() ở bước phân tích tài liệu
 ) -> dict[str, Any]:
     """
-    Sinh lộ trình học tập chia giai đoạn từ kết quả quiz/đề thi.
-    Mỗi giai đoạn có: tên, thời gian, topics, kế hoạch hàng ngày.
+    Sinh lộ trình học tập theo 2 lớp, cả 2 đều do LLM quyết định nội dung cá nhân hóa:
+      1. LLM lên KHUNG (giai đoạn → chủ đề, kèm lý do/tiên quyết + ước lượng phút cần cho mỗi chủ
+         đề). Giữ output gọn (không liệt kê từng ngày ở bước này) để tránh context quá dài khiến
+         LLM trả lời qua loa.
+      2. Với TỪNG giai đoạn, gọi riêng LLM một lần nữa để lên lịch CHI TIẾT TỪNG NGÀY — thời gian
+         mỗi ngày co giãn theo độ khó thực tế (không xếp cứng bằng thuật toán, vì như vậy sẽ mất
+         tính cá nhân hóa). Ngày tháng cụ thể vẫn được tính bằng code (thuần cơ học lịch, không
+         mang tính cá nhân hóa) để tránh LLM tính sai ngày — LLM chỉ quyết định NỘI DUNG của từng
+         ngày trong số các ngày hợp lệ được cung cấp.
+    Nếu bước lên lịch chi tiết của một giai đoạn bị lỗi, giai đoạn đó (và chỉ giai đoạn đó) sẽ dùng
+    lịch dự phòng xếp bằng thuật toán, để không làm hỏng toàn bộ lộ trình.
     """
     level_hint = ""
     if score_ratio is not None:
@@ -1005,85 +1321,235 @@ async def generate_learning_roadmap(
     else:
         level_hint = "Học sinh mới bắt đầu tiếp cận môn học."
 
-    weak_topics_str = ", ".join(weak_topics[:10]) if weak_topics else "các kiến thức cơ bản"
+    weak_topics_str = ", ".join(weak_topics[:15]) if weak_topics else "các kiến thức cơ bản"
+    learned_topics_str = ", ".join(learned_topics[:15]) if learned_topics else "Chưa có"
 
     quiz_context = ""
     if quick_quiz_results_str:
-        quiz_context = f"KẾT QUẢ QUICK TEST GẦN NHẤT:\n{quick_quiz_results_str}\n(Lưu ý: Nếu kết quả báo sai nhiều ở các câu tiên quyết/cơ bản, HÃY thêm ngay Giai đoạn 0: Ôn tập kiến thức nền tảng. Nếu đúng gần hết, đề xuất Lộ trình tăng tốc rút ngắn thời gian.)\n"
+        quiz_context = f"KẾT QUẢ QUICK TEST GẦN NHẤT:\n{quick_quiz_results_str}\n(Lưu ý: Nếu kết quả báo sai nhiều ở các câu tiên quyết/cơ bản, HÃY thêm ngay giai đoạn ôn tập kiến thức nền tảng trước. Nếu đúng gần hết, có thể rút ngắn thời gian các chủ đề đó.)\n"
 
-    prompt = f"""Bạn là chuyên gia giáo dục AI, thiết kế lộ trình học tập cá nhân hóa sâu sắc.
+    evidence_context = f"MINH CHỨNG NĂNG LỰC BỔ SUNG: {evidence_summary}\n" if evidence_summary else ""
+
+    position_context = ""
+    if curriculum_position and curriculum_position.get("topic"):
+        pos_topic = curriculum_position["topic"]
+        on_track = curriculum_position.get("on_track", True)
+        if on_track:
+            position_context = (
+                f"VỊ TRÍ HIỆN TẠI TRONG CHƯƠNG TRÌNH: Người học tự xác nhận đã học vững đến "
+                f"'{pos_topic}' (đúng theo tiến độ).\n"
+            )
+        else:
+            position_context = (
+                f"VỊ TRÍ HIỆN TẠI TRONG CHƯƠNG TRÌNH: Trường/chương trình đã dạy đến '{pos_topic}', "
+                f"nhưng người học tự nhận là CHƯA nắm vững / có thể bị mất gốc ở khúc này. "
+                f"PHẢI ưu tiên ôn lại từ trước mốc '{pos_topic}' trước khi học tiếp phần sau.\n"
+            )
+
+    days_available: int | None = None
+    deadline_date: date | None = None
+    if deadline:
+        try:
+            deadline_date = date.fromisoformat(deadline.strip())
+            days_available = max(1, (deadline_date - date.today()).days)
+        except Exception:
+            days_available = None
+    budget_minutes = (
+        (days_available // 7 * days_per_week + min(days_per_week, days_available % 7)) * minutes_per_day
+        if days_available is not None
+        else None
+    )
+    deadline_context = (
+        f"THỜI HẠN MỤC TIÊU: {deadline} (còn khoảng {days_available} ngày, ước tính tổng quỹ thời "
+        f"gian khả dụng ~{budget_minutes} phút với nhịp học {minutes_per_day} phút/ngày, "
+        f"{days_per_week} ngày/tuần)\n"
+        if days_available is not None
+        else ""
+    )
+
+    reading_time_context = ""
+    if reading_time:
+        lo = reading_time.get("deep_study_minutes_min", 0)
+        hi = reading_time.get("deep_study_minutes_max", 0)
+        if lo or hi:
+            reading_time_context = (
+                f"THAM KHẢO CHUNG (thống kê trung bình, CHƯA cá nhân hóa): tài liệu này có khoảng "
+                f"{reading_time.get('word_count', 0)} từ; một người trung bình cần khoảng {lo}-{hi} "
+                f"phút (~{round(lo / 60, 1)}-{round(hi / 60, 1)} giờ) để HỌC SÂU (đọc + ghi chú + làm "
+                f"bài tập) toàn bộ tài liệu gốc. Đây chỉ là mốc tham chiếu khởi điểm — hãy dùng nó để "
+                f"PHÁT HIỆN LỆCH PHA: nếu quỹ thời gian người dùng cho lớn hơn NHIỀU so với mốc này, "
+                f"tài liệu có thể khá ngắn so với thời gian họ dành ra — hãy đặt \"pacing_note\" gợi ý "
+                f"dùng thời gian dư để đào sâu/mở rộng/luyện tập thêm thay vì để trống lãng phí; nếu quỹ "
+                f"thời gian nhỏ hơn nhiều, đây là dấu hiệu cảnh báo về tính khả thi.\n"
+            )
+
+    prompt = f"""Bạn là chuyên gia giáo dục AI, thiết kế khung lộ trình học tập CÁ NHÂN HÓA ĐẾN CỰC
+ĐIỂM — không đưa ra lộ trình chung chung mà phải phản ánh đúng tình trạng riêng của người học này.
 
 MÔN HỌC: {subject}
 MỤC TIÊU CỦA NGƯỜI HỌC: {selected_goal}
 ĐÁNH GIÁ NĂNG LỰC: {level_hint}
-{quiz_context}CÁC CHỦ ĐỀ CẦN ÔN TẬP: {weak_topics_str}
-THỜI GIAN HỌC MỖI NGÀY: {minutes_per_day} phút
+{quiz_context}{evidence_context}{position_context}{deadline_context}{reading_time_context}CHƯƠNG/CHỦ ĐỀ ĐÃ HỌC (KHÔNG đưa vào lộ trình): {learned_topics_str}
+CHƯƠNG/CHỦ ĐỀ CẦN HỌC (theo đúng thứ tự trong tài liệu): {weak_topics_str}
+NHỊP HỌC: {minutes_per_day} phút/ngày (trung bình tham khảo), {days_per_week} ngày/tuần
 
-NHIỆM VỤ: Tạo lộ trình học tập chia thành các giai đoạn logic. Tùy theo KẾT QUẢ QUICK TEST hoặc năng lực, lộ trình có thể:
-1. Chèn thêm "Giai đoạn 0: Bổ sung kiến thức nền tảng" nếu bị mất gốc (sai câu tiên quyết).
-2. Lộ trình "Tăng tốc" nếu điểm cao và vững kiến thức.
-3. Nhận xét thẳng thắn về tình hình hiện tại (Ví dụ: "Bạn chưa nắm vững nền tảng, học tài liệu này sẽ rất khó").
+NHIỆM VỤ: Lên KHUNG lộ trình chia thành các giai đoạn (KHÔNG cố định số lượng — có thể 1, 2, 5,
+hay bao nhiêu giai đoạn tùy nội dung thực tế, đừng gò ép về đúng 3 giai đoạn). Với mỗi giai đoạn,
+liệt kê các chủ đề con theo ĐÚNG thứ tự cần học. Với mỗi chủ đề, PHẢI có:
+- "why": giải thích NGẮN GỌN, CỤ THỂ vì sao cần học chủ đề này ở đây — nếu nó là kiến thức tiên
+  quyết cho chủ đề khác, hãy nói rõ "cần nắm vững X thì mới học được Y vì...". Nếu đây là phần
+  người học đang bị hổng (theo quick test / vị trí đã tick / minh chứng), hãy nói rõ lý do đó — còn
+  phần nào người học đã thể hiện tốt (VD: quick test đúng, minh chứng điểm cao) thì rút ngắn/lướt
+  nhanh, đừng phân bổ thời gian dàn đều một cách máy móc cho mọi chủ đề.
+- "estimated_minutes": số phút ước lượng CẦN THIẾT để CHÍNH người học này (không phải người trung
+  bình) học vững chủ đề này — dựa trên độ khó/độ rộng thực tế của chủ đề VÀ tình trạng riêng (hổng ở
+  đâu, vững ở đâu) đã mô tả bên trên. Bước lên lịch chi tiết từng ngày ở giai đoạn sau sẽ dựa vào
+  ước lượng này, bạn KHÔNG cần tự chia ngày/tuần ở bước này.
+- "activities": gợi ý ngắn hoạt động học cho chủ đề này (đọc lý thuyết, làm bài tập, ví dụ...).
+
+QUAN TRỌNG VỀ TÍNH KHẢ THI: Thông tin thời hạn/nhịp học ở trên là NGỮ CẢNH tham khảo, KHÔNG PHẢI
+mệnh lệnh tuyệt đối. Nếu tổng khối lượng kiến thức thực sự cần nhiều thời gian hơn quỹ thời gian
+cho phép (ví dụ người dùng muốn học hết một quyển sách trong 1 ngày — điều này VÔ LÝ), bạn CÓ QUYỀN
+từ chối tuân theo mù quáng: cứ ước lượng "estimated_minutes" trung thực theo đúng khối lượng kiến
+thức thực tế, đặt "feasible": false, và trong "feasibility_note" giải thích rõ ràng, thẳng thắn tại
+sao không khả thi và nên điều chỉnh gì (rút gọn nội dung nào, hoặc cần thêm bao nhiêu thời gian).
+KHÔNG được cắt xén ước lượng thời gian một cách giả tạo chỉ để vừa khít thời hạn.
 
 Trả về JSON (chỉ JSON, không markdown):
 {{
-  "total_weeks": 6,
-  "overview": "Mô tả tổng quan 1-2 câu về toàn bộ lộ trình và nhận xét thẳng thắn",
+  "overview": "Nhận xét thẳng thắn 2-3 câu về tình hình hiện tại và tổng quan lộ trình",
+  "pacing_note": "Nếu phát hiện lệch pha giữa khối lượng tài liệu và quỹ thời gian (quá dư hoặc quá thiếu so với THAM KHẢO CHUNG), giải thích ở đây và đề xuất điều chỉnh. Để trống nếu nhịp độ hợp lý.",
+  "feasible": true,
+  "feasibility_note": "Chỉ điền khi feasible=false — giải thích cụ thể tại sao và nên làm gì",
   "phases": [
     {{
       "phase_number": 1,
-      "title": "Tên giai đoạn",
-      "duration_weeks": 2,
-      "goal": "Mục tiêu cụ thể cần đạt sau giai đoạn này",
-      "topics": ["Chủ đề 1", "Chủ đề 2", "Chủ đề 3"],
-      "daily_plan": "Mô tả ngắn về việc học hàng ngày trong giai đoạn này",
-      "milestone": "Cột mốc kiểm tra cuối giai đoạn"
+      "title": "Tên giai đoạn (mô tả nội dung, KHÔNG phải chỉ 'Giai đoạn 1')",
+      "why": "Vì sao giai đoạn này cần đứng ở vị trí này trong lộ trình",
+      "topics": [
+        {{"title": "Tên chủ đề", "why": "...", "estimated_minutes": 90, "activities": "..."}}
+      ],
+      "milestone": "Cột mốc/cách tự kiểm tra cuối giai đoạn",
+      "search_query": "Cụm từ khóa tiếng Việt ngắn gọn, chính xác nhất để tìm video bài giảng/bài tập liên quan trực tiếp đến nội dung giai đoạn này (KHÔNG chung chung)"
     }}
   ]
 }}"""
 
+    start_date_obj = date.today()
+    if start_date:
+        try:
+            start_date_obj = date.fromisoformat(start_date.strip())
+        except Exception:
+            start_date_obj = date.today()
+
     try:
         raw = await _call_llm_with_fallback(
-            prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=60.0
+            prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=75.0
         )
         result = _parse_json_safely(raw)
-        if result.get("phases"):
-            return result
+        phases = result.get("phases")
+        if phases:
+            # Lớp 2: với TỪNG giai đoạn, gọi riêng LLM lên lịch chi tiết từng ngày (tuần tự, vì
+            # ngày bắt đầu của giai đoạn sau phụ thuộc ngày kết thúc thực tế của giai đoạn trước).
+            cursor = _next_study_date(start_date_obj, days_per_week)
+            assembled_phases: list[dict] = []
+            global_day_counter = 0
+            any_fallback_used = False
+
+            for phase in phases:
+                topics = phase.get("topics", [])
+                total_minutes = sum(
+                    (int(t.get("estimated_minutes", 30)) if isinstance(t, dict) else 30)
+                    for t in topics
+                ) if topics else 0
+                # Đủ ngày ứng viên rộng rãi để LLM có không gian co giãn thời gian mỗi ngày
+                candidate_count = max(15, min(60, int(total_minutes / max(10, minutes_per_day) * 1.6) + 5))
+                candidate_dates = _candidate_study_dates(cursor, days_per_week, candidate_count)
+
+                days: list[dict] | None = None
+                try:
+                    days = await _schedule_phase_days_llm(
+                        phase, subject, candidate_dates, minutes_per_day, reading_time,
+                        gemini_api_keys, llm_api_keys, llm_base_url, llm_model,
+                    )
+                except Exception as e:
+                    logger.warning(f"Lớp 2 (lên lịch ngày) lỗi cho giai đoạn '{phase.get('title')}': {e}")
+
+                if not days:
+                    any_fallback_used = True
+                    fb_phases, _ = _schedule_roadmap_days([phase], minutes_per_day, days_per_week, cursor)
+                    days = fb_phases[0]["days"] if fb_phases else []
+
+                for d in days:
+                    global_day_counter += 1
+                    d["day_number"] = global_day_counter
+
+                assembled_phases.append({
+                    **{k: v for k, v in phase.items() if k != "topics"},
+                    "days": days,
+                })
+
+                if days:
+                    last_date = date.fromisoformat(days[-1]["date"])
+                    cursor = _next_study_date(last_date + timedelta(days=1), days_per_week)
+
+            end_date = start_date_obj
+            for p in reversed(assembled_phases):
+                if p["days"]:
+                    end_date = date.fromisoformat(p["days"][-1]["date"])
+                    break
+
+            feasible = bool(result.get("feasible", True))
+            feasibility_note = str(result.get("feasibility_note") or "")
+            pacing_note = str(result.get("pacing_note") or "")
+            # Kiểm tra khả thi bằng toán thật, không chỉ tin lời LLM — nếu lịch xếp thực tế vượt hạn,
+            # ép feasible=false và giải thích rõ bằng số liệu cụ thể (không im lặng cắt xén nội dung).
+            if deadline_date and end_date > deadline_date:
+                feasible = False
+                overdue_days = (end_date - deadline_date).days
+                feasibility_note = (
+                    f"Với nhịp học {minutes_per_day} phút/ngày, {days_per_week} ngày/tuần, lộ trình cần "
+                    f"đến {end_date.strftime('%d/%m/%Y')} mới học xong — trễ khoảng {overdue_days} ngày so "
+                    f"với hạn {deadline_date.strftime('%d/%m/%Y')} bạn đặt ra. "
+                    + (feasibility_note or "Bạn có thể tăng thời gian học mỗi ngày/số ngày mỗi tuần, hoặc gia hạn mục tiêu.")
+                )
+            if any_fallback_used:
+                feasibility_note = (
+                    (feasibility_note + " " if feasibility_note else "")
+                    + "(Một vài giai đoạn dùng lịch mẫu do bước lên lịch chi tiết bằng AI tạm thời lỗi.)"
+                )
+            return {
+                "overview": result.get("overview", f"Lộ trình học {subject} theo mục tiêu: {selected_goal}"),
+                "pacing_note": pacing_note,
+                "feasible": feasible,
+                "feasibility_note": feasibility_note,
+                "total_days": global_day_counter,
+                "end_date": end_date.isoformat(),
+                "phases": assembled_phases,
+            }
     except Exception as e:
         logger.warning(f"Roadmap generation failed: {e}")
 
-    # Fallback roadmap
+    # Fallback roadmap (khi LLM lỗi hoàn toàn) — xếp theo ngày thật bằng thuật toán
+    fallback_source = weak_topics if weak_topics else ["Kiến thức cơ bản"]
+    fallback_phases_input = [{
+        "phase_number": 1,
+        "title": f"Lộ trình {subject}",
+        "why": "Học tuần tự theo đúng thứ tự chủ đề trong tài liệu.",
+        "topics": [{"title": t, "why": "", "estimated_minutes": 60, "activities": "Đọc lý thuyết + làm bài tập cơ bản"} for t in fallback_source],
+        "milestone": "Tự kiểm tra lại sau khi hoàn thành",
+        "search_query": subject,
+    }]
+    scheduled_phases, end_date = _schedule_roadmap_days(fallback_phases_input, minutes_per_day, days_per_week, start_date_obj)
+    feasible = not (deadline_date and end_date > deadline_date)
     return {
-        "total_weeks": 6,
-        "overview": f"Lộ trình học {subject} theo mục tiêu: {selected_goal}",
-        "phases": [
-            {
-                "phase_number": 1,
-                "title": "Nền tảng",
-                "duration_weeks": 2,
-                "goal": "Nắm vững các khái niệm cơ bản",
-                "topics": weak_topics[:3] if weak_topics else ["Kiến thức cơ bản"],
-                "daily_plan": f"Học {minutes_per_day} phút/ngày, tập trung lý thuyết và ví dụ mẫu.",
-                "milestone": "Làm bài kiểm tra nhỏ cuối tuần 2",
-            },
-            {
-                "phase_number": 2,
-                "title": "Luyện tập",
-                "duration_weeks": 2,
-                "goal": "Vận dụng kiến thức vào bài tập",
-                "topics": weak_topics[3:6] if len(weak_topics) > 3 else ["Bài tập thực hành"],
-                "daily_plan": f"Học {minutes_per_day} phút/ngày, làm bài tập đa dạng.",
-                "milestone": "Hoàn thành bộ đề luyện tập",
-            },
-            {
-                "phase_number": 3,
-                "title": "Nâng cao & Tổng ôn",
-                "duration_weeks": 2,
-                "goal": "Đạt mục tiêu: " + selected_goal,
-                "topics": ["Ôn tập tổng hợp", "Đề thi thử", "Sửa lỗi sai"],
-                "daily_plan": f"Học {minutes_per_day} phút/ngày, tập trung đề thi và bài khó.",
-                "milestone": "Thi thử và đánh giá cuối lộ trình",
-            },
-        ],
+        "overview": f"Lộ trình học {subject} theo mục tiêu: {selected_goal} (sinh bằng mẫu dự phòng do lỗi AI)",
+        "pacing_note": "",
+        "feasible": feasible,
+        "feasibility_note": "" if feasible else f"Lộ trình cần đến {end_date.isoformat()}, trễ hơn hạn {deadline}.",
+        "total_days": scheduled_phases[-1]["days"][-1]["day_number"] if scheduled_phases and scheduled_phases[-1]["days"] else 0,
+        "end_date": end_date.isoformat(),
+        "phases": scheduled_phases,
     }
 
 
@@ -1101,14 +1567,28 @@ async def crawl_resources_per_phase(
 
     for phase in phases:
         phase_key = f"phase_{phase.get('phase_number', 1)}"
-        topics = phase.get("topics", [])
-        if not topics:
+        # Chủ đề giờ nằm trong "days" (đã xếp lịch) thay vì "topics" phẳng như trước — gom lại
+        # danh sách tên chủ đề duy nhất theo đúng thứ tự xuất hiện để phục vụ tạo search_query.
+        topic_titles: list[str] = []
+        for day in phase.get("days", []):
+            for t in day.get("topics", []):
+                title = t.get("title", "") if isinstance(t, dict) else str(t)
+                if title and title not in topic_titles:
+                    topic_titles.append(title)
+        if not topic_titles and phase.get("topics"):
+            # Tương thích ngược nếu phase vẫn ở dạng cũ (chưa qua bước xếp lịch)
+            topic_titles = [t.get("title", "") if isinstance(t, dict) else str(t) for t in phase["topics"]]
+        if not topic_titles:
             continue
 
-        # Tạo query search từ chủ đề giai đoạn + môn học
-        topic_str = " ".join(topics[:3])
-        query = f"{subject} {topic_str}"
-        search_query = _extract_search_terms(query)
+        # Ưu tiên search_query do LLM sinh riêng cho giai đoạn này (chính xác hơn) — nếu
+        # không có (fallback roadmap không dùng LLM), ghép chủ đề + môn học như cũ.
+        llm_query = (phase.get("search_query") or "").strip()
+        if llm_query:
+            search_query = _extract_search_terms(f"{subject} {llm_query}")
+        else:
+            topic_str = " ".join(topic_titles[:3])
+            search_query = _extract_search_terms(f"{subject} {topic_str}")
 
         try:
             tasks = [
@@ -1287,12 +1767,24 @@ async def analyze_multiple_documents(
     unique_normalized = list(dict.fromkeys(normalized))
     multi_subject = len(unique_normalized) > 1
 
-    merged_raw = "\n\n---\n\n".join(r.get("raw_text", "") for r in valid)[:6000]
-    merged_topics = list(dict.fromkeys(t for r in valid for t in r.get("topics", [])))[:10]
+    full_raw = "\n\n---\n\n".join(r.get("raw_text", "") for r in valid)
+    merged_raw = full_raw[:6000]
+    # Chỉ gộp topics từ các tài liệu CÓ cấu trúc chương rõ ràng — tài liệu viết liền mạch
+    # không đóng góp mục lục vì không thể xác định thứ tự chương của nó.
+    structured_docs = [r for r in valid if r.get("has_clear_structure")]
+    merged_topics = list(
+        dict.fromkeys(t for r in structured_docs for t in r.get("topics", []))
+    )[:20]
     merged_goals = valid[0].get("suggested_goals", []) if valid else []
     is_code = any(r.get("is_code_related") for r in valid)
     ocr_engine = valid[0].get("ocr_engine", "unknown") if valid else "unknown"
     merged_subject = subjects[0] if subjects else "Tài liệu học tập"
+    has_clear_structure = len(structured_docs) > 0
+    structure_reason = (
+        None
+        if has_clear_structure
+        else next((r.get("structure_reason") for r in valid if r.get("structure_reason")), None)
+    )
 
     return {
         "results": [r for r in results if isinstance(r, dict)],
@@ -1304,7 +1796,100 @@ async def analyze_multiple_documents(
         "merged_goals": merged_goals,
         "is_code_related": is_code,
         "ocr_engine": ocr_engine,
+        "has_clear_structure": has_clear_structure,
+        "structure_reason": structure_reason,
+        "reading_time": estimate_reading_time(full_raw),
     }
+
+
+# ---------------------------------------------------------------------------
+# Competency Evidence Validation (Luồng 1 — Nhóm 2: năng lực hiện tại)
+# ---------------------------------------------------------------------------
+
+async def analyze_competency_evidence(
+    file_bytes: bytes,
+    filename: str,
+    gemini_api_keys: list[str],
+    llm_api_keys: list[str],
+    llm_base_url: str,
+    llm_model: str | None,
+) -> dict[str, Any]:
+    """
+    Xác thực tài liệu minh chứng năng lực (bảng điểm/chứng chỉ/bài kiểm tra) do người
+    dùng upload — chặn trường hợp upload nhầm ảnh/file không liên quan.
+
+    Returns:
+        {
+            is_competency_evidence: bool,
+            evidence_type: "transcript"|"certificate"|"exam"|"other",
+            reason: str | None,  # lý do khi is_competency_evidence=False
+            raw_text: str,
+        }
+    """
+    try:
+        raw_text, _ocr_engine = await extract_text_from_file(file_bytes, filename, gemini_api_keys)
+    except (ValueError, RuntimeError) as e:
+        return {
+            "is_competency_evidence": False,
+            "evidence_type": "other",
+            "reason": f"Không thể đọc file: {e}",
+            "raw_text": "",
+        }
+
+    if not raw_text or len(raw_text.strip()) < 10:
+        return {
+            "is_competency_evidence": False,
+            "evidence_type": "other",
+            "reason": "File trống hoặc không đọc được nội dung.",
+            "raw_text": "",
+        }
+
+    if not llm_api_keys or not llm_model:
+        # Không có AI để xác thực — chấp nhận có điều kiện, để người dùng tự chịu trách nhiệm.
+        return {
+            "is_competency_evidence": True,
+            "evidence_type": "other",
+            "reason": None,
+            "raw_text": raw_text,
+        }
+
+    prompt = f"""Bạn là hệ thống xác thực tài liệu minh chứng năng lực học tập.
+
+NỘI DUNG TÀI LIỆU (tối đa 2000 ký tự đầu):
+---
+{raw_text[:2000]}
+---
+
+NHIỆM VỤ: Xác định tài liệu này có phải là minh chứng năng lực học tập không — tức là bảng điểm,
+chứng chỉ, hoặc bài kiểm tra/bài thi đã làm. KHÔNG phải minh chứng nếu đây là ảnh/văn bản không
+liên quan (ảnh cá nhân, tài liệu khác môn, văn bản ngẫu nhiên...).
+
+Trả về JSON (chỉ JSON):
+{{
+  "is_competency_evidence": true hoặc false,
+  "evidence_type": "transcript" (bảng điểm) | "certificate" (chứng chỉ) | "exam" (bài kiểm tra/bài thi đã làm) | "other",
+  "reason": "Lý do ngắn gọn nếu is_competency_evidence=false, để trống nếu true"
+}}"""
+
+    try:
+        raw = await _call_llm_with_fallback(
+            prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=30.0
+        )
+        data = _parse_json_safely(raw)
+        return {
+            "is_competency_evidence": bool(data.get("is_competency_evidence", False)),
+            "evidence_type": data.get("evidence_type", "other"),
+            "reason": data.get("reason") or None,
+            "raw_text": raw_text,
+        }
+    except Exception as e:
+        logger.warning(f"Competency evidence validation failed: {e}")
+        return {
+            "is_competency_evidence": True,
+            "evidence_type": "other",
+            "reason": None,
+            "raw_text": raw_text,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,11 +20,19 @@ class ExamAnalysis(Base, UUIDPrimaryKeyMixin):
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     subject: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Tên môn học / bài thi (AI detect)
+    course_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("courses.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )  # Gắn với Course thật thay vì chỉ dựa vào chuỗi subject tự do
     file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)  # Đường dẫn file đã lưu
     file_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)  # SHA-256 của file để detect trùng lặp
     ocr_engine: Mapped[str] = mapped_column(String(50), default="gemini-3.1-flash-lite", nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     formula_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    exam_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # Điểm đạt được (nếu có)
+    exam_max_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # Điểm tối đa của bài
 
     # Câu hỏi đã parse
     questions_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)

@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import math
 import re
 import unicodedata
@@ -8,14 +9,18 @@ from uuid import UUID
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.content_catalog import CourseChapter
 from app.models.content_chunk import ContentChunk
 from app.models.document_analysis import DocumentAnalysis
 from app.models.user import User
 from app.services.content_service import CourseNotFoundError, get_analysis_for_manager
 
-EMBEDDING_DIMENSIONS = 384
-EMBEDDING_MODEL = "local-feature-hash-v1"
+logger = logging.getLogger(__name__)
+
+EMBEDDING_DIMENSIONS = 768
+GEMINI_EMBEDDING_MODEL = "gemini-text-embedding-004"
+FALLBACK_EMBEDDING_MODEL = "local-feature-hash-v1"
 PAGE_MARKER = re.compile(r"^\s*\[(?:Trang|Page)\s+(\d+)\]\s*$", re.IGNORECASE)
 TOKEN_PATTERN = re.compile(r"\w+", re.UNICODE)
 
@@ -27,6 +32,8 @@ class ChunkDraft:
 
 
 def feature_hash_embedding(text: str) -> list[float]:
+    """Embedding cục bộ dạng feature-hashing (blake2b) — dùng làm fallback khi không có
+    Gemini key hoặc API lỗi, và cho test không cần gọi mạng."""
     vector = [0.0] * EMBEDDING_DIMENSIONS
     normalized = unicodedata.normalize("NFKC", text).casefold()
     tokens = TOKEN_PATTERN.findall(normalized)
@@ -39,6 +46,32 @@ def feature_hash_embedding(text: str) -> list[float]:
     if magnitude:
         return [value / magnitude for value in vector]
     return vector
+
+
+def _gemini_embedding(text: str, api_key: str) -> list[float]:
+    from google import genai  # type: ignore[import]
+
+    client = genai.Client(api_key=api_key)
+    result = client.models.embed_content(model="models/text-embedding-004", contents=text)
+    values = list(result.embeddings[0].values)
+    if len(values) != EMBEDDING_DIMENSIONS:
+        raise RuntimeError(
+            f"Gemini embedding trả về {len(values)} chiều, kỳ vọng {EMBEDDING_DIMENSIONS}."
+        )
+    return values
+
+
+def embed_text(text: str) -> tuple[list[float], str]:
+    """Sinh embedding thật qua Gemini Embedding API (xoay nhiều key); nếu không có key
+    hoặc tất cả đều lỗi, fallback về feature-hashing cục bộ. Trả về (vector, embedding_model)."""
+    for i, key in enumerate(settings.gemini_api_keys):
+        try:
+            vector = _gemini_embedding(text, key)
+            return vector, GEMINI_EMBEDDING_MODEL
+        except Exception as e:
+            logger.warning(f"Gemini embedding key #{i + 1} lỗi: {str(e)[:80]}, thử tiếp...")
+    logger.warning("Không có Gemini key khả dụng cho embedding, dùng fallback feature-hashing.")
+    return feature_hash_embedding(text), FALLBACK_EMBEDDING_MODEL
 
 
 def split_content_chunks(
@@ -146,24 +179,26 @@ async def _replace_chunks(
             ContentChunk.course_version_id == analysis.course_version_id
         )
     )
-    chunks = [
-        ContentChunk(
-            course_version_id=analysis.course_version_id,
-            document_id=analysis.document_id,
-            chunk_index=index,
-            text=draft.text,
-            character_count=len(draft.text),
-            token_count=len(TOKEN_PATTERN.findall(draft.text)),
-            page_number=draft.page_number,
-            source_label=(
-                f"Trang {draft.page_number}" if draft.page_number else f"Đoạn {index + 1}"
-            ),
-            metadata_json={"source": "edited" if analysis.edited_text else "original"},
-            embedding_model=EMBEDDING_MODEL,
-            embedding=feature_hash_embedding(draft.text),
+    chunks = []
+    for index, draft in enumerate(drafts):
+        vector, embedding_model = embed_text(draft.text)
+        chunks.append(
+            ContentChunk(
+                course_version_id=analysis.course_version_id,
+                document_id=analysis.document_id,
+                chunk_index=index,
+                text=draft.text,
+                character_count=len(draft.text),
+                token_count=len(TOKEN_PATTERN.findall(draft.text)),
+                page_number=draft.page_number,
+                source_label=(
+                    f"Trang {draft.page_number}" if draft.page_number else f"Đoạn {index + 1}"
+                ),
+                metadata_json={"source": "edited" if analysis.edited_text else "original"},
+                embedding_model=embedding_model,
+                embedding=vector,
+            )
         )
-        for index, draft in enumerate(drafts)
-    ]
     session.add_all(chunks)
     await session.commit()
     for chunk in chunks:
@@ -179,7 +214,7 @@ async def search_content_chunks(
     limit: int,
 ) -> list[tuple[ContentChunk, float, float]]:
     await get_analysis_for_manager(session, user, course_version_id)
-    query_embedding = feature_hash_embedding(query)
+    query_embedding, _ = embed_text(query)
     vector_score = 1 - ContentChunk.embedding.cosine_distance(query_embedding)
     lexical_score = func.ts_rank_cd(
         func.to_tsvector("simple", ContentChunk.text),

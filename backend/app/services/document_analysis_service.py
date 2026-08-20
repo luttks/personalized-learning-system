@@ -5,11 +5,9 @@ from uuid import UUID
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from app.agents.learner.understanding_agent import (
-    LearnerUnderstandingError,
-    OpenAICompatibleProvider,
-)
+from app.agents.learner.understanding_agent import LearnerUnderstandingError
 from app.core.config import Settings
+from app.core.llm_client import LLMClient
 from app.models.content import (
     CourseVersionStatus,
     DocumentJobStatus,
@@ -82,10 +80,11 @@ async def analyze_document_job(
         provider_name = "fallback"
         model_name = None
         if settings.llm_api_key and settings.llm_model:
-            provider = OpenAICompatibleProvider(
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_base_url,
-                model=settings.llm_model,
+            provider = LLMClient(
+                gemini_api_keys=settings.gemini_api_keys,
+                groq_api_keys=settings.llm_api_keys,
+                groq_base_url=settings.llm_base_url,
+                groq_model=settings.llm_model,
                 timeout_seconds=settings.llm_timeout_seconds,
             )
             try:

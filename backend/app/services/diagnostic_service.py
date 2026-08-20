@@ -4,13 +4,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.learner.understanding_agent import OpenAICompatibleProvider
 from app.core.config import settings
+from app.core.llm_client import get_llm_client
 from app.models.content import Course, CourseStatus
 from app.models.content_catalog import CourseChapter, CourseConcept, CourseLesson
 from app.models.content_chunk import ContentChunk
 from app.models.diagnostic import DiagnosticAssessment, DiagnosticAttempt
-from app.models.learner import LearnerEvidence, LearnerTopicMastery
+from app.models.learner import LearnerEvidence, LearnerTopicMastery, MasteryHistory
 from app.models.learner_course_profile import LearnerCourseProfile
 from app.models.user import User
 from app.services.diagnostic_question_generator import generate_diagnostic_questions
@@ -140,13 +140,7 @@ async def start_diagnostic(session: AsyncSession, user: User, course_id: UUID) -
                 ],
             }
         )
-    provider = OpenAICompatibleProvider(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
-        timeout_seconds=settings.llm_timeout_seconds,
-    )
-    questions = await generate_diagnostic_questions(provider, lesson_contexts)
+    questions = await generate_diagnostic_questions(get_llm_client(), lesson_contexts)
     for question in questions:
         question["id"] = str(uuid4())
     assessment_version = (
@@ -249,6 +243,7 @@ async def submit_diagnostic(
                 updated_at=now,
             )
             session.add(mastery)
+        old_score = mastery.mastery_score
         mastery.mastery_score = update_mastery(
             mastery.mastery_score,
             correct=correct,
@@ -260,6 +255,17 @@ async def submit_diagnostic(
         mastery.repeated_errors = 0 if correct else mastery.repeated_errors + 1
         mastery.last_assessed_at = now
         mastery.updated_at = now
+        session.add(
+            MasteryHistory(
+                learner_id=learner.id,
+                topic_id=str(concept_id),
+                old_score=old_score,
+                new_score=mastery.mastery_score,
+                delta=round(mastery.mastery_score - old_score, 4),
+                source=f"diagnostic:{attempt.id}",
+                created_at=now,
+            )
+        )
         session.add(
             LearnerEvidence(
                 learner_id=learner.id,

@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock3,
   Code,
+  Eye,
   ExternalLink,
   FileText,
   Flag,
@@ -20,6 +21,7 @@ import {
   ShieldAlert,
   Link2,
   Target,
+  Trash2,
   Trophy,
   Upload,
   X,
@@ -33,6 +35,7 @@ import rehypeKatex from "rehype-katex";
 
 import { getApiErrorMessage } from "../api/client";
 import {
+  analyzeCompetencyEvidence,
   analyzeDocument,
   generateQuiz,
   submitExam,
@@ -40,6 +43,11 @@ import {
   listSubjects,
   listAnalysesBySubject,
   getExamAnalysis,
+  deleteSubject,
+  deleteExamAnalysis,
+  discardTempFile,
+  getExamAnalysisFileBlob,
+  type CompetencyEvidenceResult,
   type DocumentAnalysisResult,
   type ExamAnalysisDetail,
   type ExamAnalysisSummary,
@@ -50,7 +58,49 @@ import {
   type ParseExamResponse,
   type SubjectSummary,
 } from "../api/exam";
+import { getStudentProfile } from "../api/student";
 import { Button } from "../components/ui";
+
+const FIXED_GOAL_OPTIONS = [
+  "Hoàn thành toàn bộ nội dung môn học",
+  "Làm bài kiểm tra/thi đạt kết quả tốt",
+  "Nắm chắc kiến thức nền tảng để học tiếp lên",
+];
+
+// Lưu tạm tiến trình đang làm dở của luồng "Lộ trình học" — để khi người dùng chuyển sang
+// trang khác rồi quay lại, các thao tác đã điền không bị mất. File gốc (đối tượng File) không
+// thể serialize được nên không lưu; nếu cần, người dùng phải chọn lại file khi quay lại.
+const ONBOARDING_DRAFT_KEY = "onboarding_draft_v1";
+
+interface OnboardingDraft {
+  screen?: OnboardingScreen;
+  analysis?: DocumentAnalysisResult | null;
+  fileNames?: string[];
+  tempFileId?: string | null;
+  selectedGoal?: string;
+  customGoal?: string;
+  quiz?: QuizQuestion[];
+  topicSummary?: string;
+  answers?: Record<number, string>;
+  quizSubmitted?: boolean;
+  quizAnswers?: QuizAnswer[];
+  curriculumTopic?: string | null;
+  onTrack?: boolean | null;
+  evidenceResult?: CompetencyEvidenceResult | null;
+  evidenceScore?: string;
+  evidenceMaxScore?: string;
+  deadline?: string;
+  startDate?: string;
+}
+
+function loadOnboardingDraft(): OnboardingDraft {
+  try {
+    const raw = sessionStorage.getItem(ONBOARDING_DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as OnboardingDraft) : {};
+  } catch {
+    return {};
+  }
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
@@ -226,7 +276,7 @@ function DropZone({
     >
       <Upload className="size-8 mx-auto text-slate-400 mb-2" />
       <p className="font-semibold text-slate-700 text-sm">Kéo thả file hoặc nhấn để chọn</p>
-      <p className="text-xs text-slate-500 mt-1">PDF, DOCX, TXT, JPG, PNG — tối đa 20MB</p>
+      <p className="text-xs text-slate-500 mt-1">PDF, DOCX, TXT, JPG, PNG — tối đa 100MB</p>
       <input
         ref={inputRef}
         type="file"
@@ -437,6 +487,109 @@ export function GlobalResourcesPanel({ res }: { res: ExamResources }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Xem trước tài liệu gốc — dùng chung giữa lịch sử môn học và lộ trình học
+// ──────────────────────────────────────────────────────────────────────────
+function useDocumentPreview() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => { if (url) URL.revokeObjectURL(url); };
+  }, [url]);
+
+  async function open(analysisId: string) {
+    setIsOpen(true);
+    setError("");
+    if (loadedId === analysisId && url) return; // đã tải sẵn đúng file này rồi, khỏi tải lại
+    setUrl(null);
+    setLoadedId(analysisId);
+    setLoading(true);
+    try {
+      const blob = await getExamAnalysisFileBlob(analysisId);
+      setUrl(URL.createObjectURL(blob));
+    } catch (e) {
+      setError(getApiErrorMessage(e, "Không tìm thấy file gốc (có thể đã bị xóa)."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function close() {
+    setIsOpen(false);
+  }
+
+  return { isOpen, url, loading, error, open, close };
+}
+
+function DocumentPreviewModal({
+  filename,
+  url,
+  loading,
+  error,
+  onClose,
+}: {
+  filename: string;
+  url: string | null;
+  loading: boolean;
+  error: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+      <div className="w-full max-w-4xl h-[85vh] rounded-2xl bg-white shadow-2xl flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-3 shrink-0">
+          <div className="min-w-0">
+            <p className="text-xs text-slate-400">Bản xem trước</p>
+            <p className="font-semibold text-slate-800 truncate">{filename}</p>
+          </div>
+          <button onClick={onClose} className="shrink-0 p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100">
+            <X className="size-5" />
+          </button>
+        </div>
+        <div className="flex-1 min-h-0 bg-slate-100 flex items-center justify-center overflow-auto">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <Loader2 className="size-4 animate-spin" /> Đang tải file...
+            </div>
+          )}
+          {error && !loading && (
+            <div className="flex flex-col items-center gap-2 text-sm text-slate-500 px-6 text-center">
+              <AlertCircle className="size-6 text-red-400" />
+              {error}
+            </div>
+          )}
+          {url && !loading && !error && (() => {
+            const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+            if (["jpg", "jpeg", "png", "webp"].includes(ext)) {
+              return <img src={url} alt={filename} className="max-w-full max-h-full object-contain" />;
+            }
+            if (ext === "pdf") {
+              return <iframe src={url} title={filename} className="w-full h-full border-0" />;
+            }
+            return (
+              <div className="flex flex-col items-center gap-3 text-sm text-slate-500 px-6 text-center">
+                <FileText className="size-8 text-slate-300" />
+                <p>Định dạng này không xem trước trực tiếp được trong trình duyệt.</p>
+                <a
+                  href={url}
+                  download={filename}
+                  className="inline-flex items-center gap-1.5 text-indigo-600 hover:text-indigo-700 font-medium"
+                >
+                  Tải xuống để xem
+                </a>
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Inline Roadmap Panel
 // ──────────────────────────────────────────────────────────────────────────
 export function RoadmapInlinePanel({
@@ -444,28 +597,40 @@ export function RoadmapInlinePanel({
   phaseResources,
   subject,
   goal,
+  analysisId,
+  sourceFilename,
 }: {
   roadmap: InlineRoadmap;
   phaseResources: Record<string, PhaseResources>;
   subject: string;
   goal: string;
+  analysisId?: string;
+  sourceFilename?: string;
 }) {
   const [expandedPhase, setExpandedPhase] = useState<number | null>(0);
   const [applied, setApplied] = useState(false);
+  const preview = useDocumentPreview();
+
+  const totalDays = roadmap.total_days ?? roadmap.phases.reduce((s, p) => s + p.days.length, 0);
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleDateString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit" });
 
   function handleEmail() {
     const lines = [
       `LỘ TRÌNH HỌC TẬP: ${subject}`,
       `Mục tiêu: ${goal}`,
-      `Tổng thời gian: ${roadmap.total_weeks} tuần`,
+      `Tổng số ngày học: ${totalDays} ngày${roadmap.end_date ? ` (dự kiến xong ${formatDate(roadmap.end_date)})` : ""}`,
       ``,
       roadmap.overview,
+      roadmap.feasible === false && roadmap.feasibility_note ? `\n⚠ ${roadmap.feasibility_note}` : ``,
       ``,
       ...roadmap.phases.flatMap((p) => [
-        `--- Giai đoạn ${p.phase_number}: ${p.title} (${p.duration_weeks} tuần) ---`,
-        `Mục tiêu: ${p.goal}`,
-        `Chủ đề: ${p.topics.join(", ")}`,
-        `Kế hoạch: ${p.daily_plan}`,
+        `--- Giai đoạn ${p.phase_number}: ${p.title} ---`,
+        p.why ? `Vì sao: ${p.why}` : ``,
+        ...p.days.flatMap((d) => [
+          `  ${formatDate(d.date)} (${d.total_minutes} phút):`,
+          ...d.topics.map((t) => `    - ${t.title} (${t.minutes} phút)${t.why ? ` — ${t.why}` : ""}`),
+        ]),
         `Cột mốc: ${p.milestone}`,
         ``,
       ]),
@@ -475,15 +640,15 @@ export function RoadmapInlinePanel({
     window.open(`mailto:?subject=${subject_enc}&body=${body}`);
   }
 
-  function gcalLink(phase: (typeof roadmap.phases)[0], index: number) {
-    const startOffset = roadmap.phases.slice(0, index).reduce((s, p) => s + p.duration_weeks * 7, 0);
-    const start = new Date();
-    start.setDate(start.getDate() + startOffset);
-    const end = new Date(start);
-    end.setDate(end.getDate() + phase.duration_weeks * 7);
+  function gcalLink(phase: RoadmapPhase) {
+    if (!phase.days.length) return "#";
+    const start = new Date(phase.days[0].date);
+    const end = new Date(phase.days[phase.days.length - 1].date);
+    end.setDate(end.getDate() + 1); // Google Calendar: ngày kết thúc không bao gồm
     const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, "").slice(0, 8);
+    const allTopics = Array.from(new Set(phase.days.flatMap((d) => d.topics.map((t) => t.title))));
     const title = encodeURIComponent(`[${subject}] Giai đoạn ${phase.phase_number}: ${phase.title}`);
-    const details = encodeURIComponent(`Mục tiêu: ${phase.goal}\n\nChủ đề: ${phase.topics.join(", ")}\n\n${phase.daily_plan}`);
+    const details = encodeURIComponent(`${phase.why ?? ""}\n\nChủ đề: ${allTopics.join(", ")}\n\nCột mốc: ${phase.milestone}`);
     return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(start)}/${fmt(end)}&details=${details}`;
   }
 
@@ -498,10 +663,13 @@ export function RoadmapInlinePanel({
           </div>
           <div className="shrink-0 flex flex-col items-center bg-white/10 rounded-xl px-3 py-2 text-center">
             <Clock3 className="size-5 mb-1 text-indigo-200" />
-            <p className="text-2xl font-black">{roadmap.total_weeks}</p>
-            <p className="text-xs text-indigo-200">tuần</p>
+            <p className="text-2xl font-black">{totalDays}</p>
+            <p className="text-xs text-indigo-200">ngày học</p>
           </div>
         </div>
+        {roadmap.end_date && (
+          <p className="text-indigo-200 text-xs mt-2">Dự kiến hoàn thành: {formatDate(roadmap.end_date)}</p>
+        )}
         <div className="flex gap-2 mt-4">
           <button
             onClick={handleEmail}
@@ -519,12 +687,30 @@ export function RoadmapInlinePanel({
         </div>
       </div>
 
+      {roadmap.pacing_note && (
+        <div className="flex items-start gap-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-sm text-indigo-800">
+          <Lightbulb className="size-4 shrink-0 mt-0.5 text-indigo-600" />
+          <p>{roadmap.pacing_note}</p>
+        </div>
+      )}
+
+      {roadmap.feasible === false && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800">
+          <AlertCircle className="size-4 shrink-0 mt-0.5 text-amber-600" />
+          <div>
+            <p className="font-semibold mb-0.5">Lộ trình chưa khớp hoàn toàn với quỹ thời gian bạn đặt ra</p>
+            <p>{roadmap.feasibility_note || "Nội dung cần học nhiều hơn quỹ thời gian cho phép."}</p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
         {roadmap.phases.map((phase, i) => {
           const c = phaseColors[i % phaseColors.length];
           const phaseKey = `phase_${phase.phase_number}`;
           const phaseRes = phaseResources[phaseKey];
           const isOpen = expandedPhase === i;
+          const phaseMinutes = phase.days.reduce((s, d) => s + d.total_minutes, 0);
 
           return (
             <div key={phase.phase_number} className={`rounded-2xl border-2 ${c.border} ${c.bg} overflow-hidden transition-all`}>
@@ -537,11 +723,14 @@ export function RoadmapInlinePanel({
                 </span>
                 <div className="flex-1 min-w-0">
                   <p className={`font-bold ${c.text} text-sm`}>{phase.title}</p>
-                  <p className="text-slate-500 text-xs mt-0.5">{phase.duration_weeks} tuần · {phase.topics.slice(0, 2).join(", ")}{phase.topics.length > 2 ? "..." : ""}</p>
+                  <p className="text-slate-500 text-xs mt-0.5">
+                    {phase.days.length} ngày · ~{Math.round(phaseMinutes / 60)} giờ
+                    {phase.days[0] && ` · ${formatDate(phase.days[0].date)} → ${formatDate(phase.days[phase.days.length - 1].date)}`}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <a
-                    href={gcalLink(phase, i)}
+                    href={gcalLink(phase)}
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={(e) => e.stopPropagation()}
@@ -556,21 +745,52 @@ export function RoadmapInlinePanel({
               </button>
               {isOpen && (
                 <div className="px-4 pb-4 space-y-4 border-t border-white/40 pt-3">
-                  <div className="rounded-xl bg-white/70 p-3 text-sm">
-                    <p className="font-semibold text-slate-800 mb-1 flex items-center gap-2"><Target className="size-3.5 text-indigo-500" /> Mục tiêu</p>
-                    <p className="text-slate-700">{phase.goal}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5"><Layers className="size-3.5" /> Chủ đề cần học</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {phase.topics.map((t) => (
-                        <span key={t} className="rounded-full bg-white border border-slate-200 px-2.5 py-0.5 text-xs font-medium text-slate-700">{t}</span>
-                      ))}
+                  {phase.why && (
+                    <div className="rounded-xl bg-white/70 p-3 text-sm">
+                      <p className="font-semibold text-slate-800 mb-1 flex items-center gap-2"><Target className="size-3.5 text-indigo-500" /> Vì sao giai đoạn này</p>
+                      <p className="text-slate-700">{phase.why}</p>
                     </div>
-                  </div>
-                  <div className="rounded-xl bg-white/70 p-3 text-sm">
-                    <p className="font-semibold text-slate-800 mb-1">📅 Kế hoạch hàng ngày</p>
-                    <p className="text-slate-700">{phase.daily_plan}</p>
+                  )}
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5"><Layers className="size-3.5" /> Lịch học từng ngày</p>
+                    <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                      {phase.days.map((day) => {
+                        const resourceIcon: Record<string, string> = { video: "🎬", exercise: "✏️", reading: "📖", mixed: "🔀" };
+                        return (
+                          <div key={day.date} className="rounded-xl bg-white/80 border border-slate-200 p-3">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <p className="text-xs font-semibold text-slate-600">Ngày {day.day_number} · {formatDate(day.date)}</p>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-xs text-slate-400">{day.total_minutes} phút</span>
+                                {analysisId && (
+                                  <button
+                                    onClick={() => void preview.open(analysisId)}
+                                    title="Xem tài liệu gốc"
+                                    className="flex items-center gap-1 rounded-lg bg-slate-100 hover:bg-indigo-50 hover:text-indigo-600 px-1.5 py-0.5 text-xs text-slate-500 transition-colors"
+                                  >
+                                    <Eye className="size-3" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {day.note && <p className="text-xs text-indigo-600 italic mb-1.5">{day.note}</p>}
+                            <div className="space-y-1.5">
+                              {day.topics.map((t, ti) => (
+                                <div key={ti} className="text-sm">
+                                  <p className="font-medium text-slate-800">
+                                    {t.title} <span className="text-xs text-slate-400 font-normal">({t.minutes} phút)</span>
+                                    {t.resource_type && <span className="text-xs ml-1" title={t.resource_type}>{resourceIcon[t.resource_type] ?? ""}</span>}
+                                  </p>
+                                  {t.why && <p className="text-xs text-slate-500 mt-0.5">💡 {t.why}</p>}
+                                  {t.activities && <p className="text-xs text-slate-500 mt-0.5">📝 {t.activities}</p>}
+                                  {t.location_hint && <p className="text-xs text-slate-400 mt-0.5">📍 Vị trí trong tài liệu: {t.location_hint}</p>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                   <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-sm">
                     <p className="font-semibold text-emerald-800 mb-0.5">🏁 Cột mốc</p>
@@ -583,6 +803,16 @@ export function RoadmapInlinePanel({
           );
         })}
       </div>
+
+      {preview.isOpen && (
+        <DocumentPreviewModal
+          filename={sourceFilename || "Tài liệu gốc"}
+          url={preview.url}
+          loading={preview.loading}
+          error={preview.error}
+          onClose={preview.close}
+        />
+      )}
     </div>
   );
 }
@@ -597,8 +827,29 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
   const subject = result.subject || result.ai_recommendation?.["_goal"] ? (result.subject || result.filename.replace(/\.[^.]+$/, "")) : "Học tập";
   const goal = (result.ai_recommendation?.["_goal"] as string) || "Nắm vững kiến thức";
 
+  const curriculumPosition = result.ai_recommendation?.["_curriculum_position"] as
+    | { topic: string; on_track: boolean }
+    | null
+    | undefined;
+  const providedDeadline = result.ai_recommendation?.["_deadline"] as string | null | undefined;
+  const providedMinutesPerDay = result.ai_recommendation?.["_minutes_per_day"] as number | null | undefined;
+  const providedEvidenceType = result.ai_recommendation?.["_evidence_type"] as string | null | undefined;
+  const quizSummary = result.ai_recommendation?.["_quiz_summary"] as
+    | { correct: number; total: number }
+    | null
+    | undefined;
+  const evidenceTypeLabel: Record<string, string> = {
+    transcript: "Bảng điểm",
+    certificate: "Chứng chỉ",
+    exam: "Bài kiểm tra đã làm",
+    other: "Minh chứng khác",
+  };
+  const hasProvidedInfo = Boolean(
+    goal || providedDeadline || providedMinutesPerDay || curriculumPosition || providedEvidenceType || quizSummary
+  );
+
   return (
-    <div className="space-y-5 max-w-3xl mx-auto">
+    <div className="space-y-5 max-w-4xl mx-auto">
       {result.roadmap_error && (
         <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
           <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-500" />
@@ -621,6 +872,51 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
           </div>
         )}
       </div>
+
+      {/* Xem lại các bước đã điền — chỉ đọc, không cho sửa */}
+      {hasProvidedInfo && (
+        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Thông tin bạn đã cung cấp</p>
+          <dl className="grid gap-3 sm:grid-cols-2 text-sm">
+            <div>
+              <dt className="text-xs text-slate-400">Mục tiêu</dt>
+              <dd className="text-slate-800 mt-0.5">{goal}</dd>
+            </div>
+            {providedDeadline && (
+              <div>
+                <dt className="text-xs text-slate-400">Hạn mục tiêu</dt>
+                <dd className="text-slate-800 mt-0.5">{new Date(providedDeadline).toLocaleDateString("vi-VN")}</dd>
+              </div>
+            )}
+            {providedMinutesPerDay ? (
+              <div>
+                <dt className="text-xs text-slate-400">Thời gian học mỗi ngày</dt>
+                <dd className="text-slate-800 mt-0.5">{providedMinutesPerDay} phút</dd>
+              </div>
+            ) : null}
+            {curriculumPosition && (
+              <div>
+                <dt className="text-xs text-slate-400">Vị trí trong chương trình</dt>
+                <dd className="text-slate-800 mt-0.5">
+                  {curriculumPosition.topic} — {curriculumPosition.on_track ? "Đã học vững" : "Bị hổng / mất gốc"}
+                </dd>
+              </div>
+            )}
+            {providedEvidenceType && (
+              <div>
+                <dt className="text-xs text-slate-400">Minh chứng năng lực</dt>
+                <dd className="text-slate-800 mt-0.5">{evidenceTypeLabel[providedEvidenceType] ?? providedEvidenceType}</dd>
+              </div>
+            )}
+            {quizSummary && (
+              <div>
+                <dt className="text-xs text-slate-400">Kết quả kiểm tra nhanh</dt>
+                <dd className="text-slate-800 mt-0.5">{quizSummary.correct}/{quizSummary.total} câu đúng</dd>
+              </div>
+            )}
+          </dl>
+        </div>
+      )}
 
       <div className="flex border-b border-slate-200 gap-1">
         {hasRoadmap && (
@@ -649,6 +945,8 @@ function ResultPanel({ result }: { result: ExamAnalysisDetail }) {
           phaseResources={result.phase_resources ?? {}}
           subject={subject}
           goal={goal}
+          analysisId={result.id}
+          sourceFilename={result.filename}
         />
       )}
       {tab === "rec" && hasRec && <RecommendationPanel rec={result.ai_recommendation} />}
@@ -843,6 +1141,8 @@ function PostExamResultPanel({ result }: { result: ExamAnalysisDetail }) {
                 phaseResources={result.phase_resources ?? {}}
                 subject={subject}
                 goal="Nắm vững kiến thức còn yếu"
+                analysisId={result.id}
+                sourceFilename={result.filename}
               />
             </div>
           )}
@@ -871,18 +1171,34 @@ function SubjectListScreen({
 }) {
   const [subjects, setSubjects] = useState<SubjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingSubject, setDeletingSubject] = useState<string | null>(null);
 
   const color = mode === "onboarding" ? "indigo" : "emerald";
 
-  useEffect(() => {
+  function refresh() {
     setLoading(true);
     listSubjects(mode)
       .then(setSubjects)
       .catch(() => setSubjects([]))
       .finally(() => setLoading(false));
-  }, [mode]);
+  }
 
-  const title = mode === "onboarding" ? "Bắt đầu học mới" : "Cải thiện sau thi";
+  useEffect(refresh, [mode]);
+
+  async function handleDeleteSubject(subject: string) {
+    if (!window.confirm(`Xóa toàn bộ dữ liệu môn "${subject}"? Hành động này không thể hoàn tác.`)) return;
+    setDeletingSubject(subject);
+    try {
+      await deleteSubject(subject);
+      setSubjects((prev) => prev.filter((s) => s.subject !== subject));
+    } catch {
+      window.alert("Xóa thất bại, vui lòng thử lại.");
+    } finally {
+      setDeletingSubject(null);
+    }
+  }
+
+  const title = mode === "onboarding" ? "Lộ trình học" : "Cải thiện sau thi";
   const emptyText = mode === "onboarding"
     ? "Bạn chưa có môn học nào. Hãy thêm môn mới để bắt đầu!"
     : "Bạn chưa có bài kiểm tra nào. Hãy thêm để bắt đầu phân tích!";
@@ -931,26 +1247,38 @@ function SubjectListScreen({
             {subjects.length} {itemLabel} đã lưu
           </p>
           {subjects.map((s) => (
-            <button
+            <div
               key={s.subject}
-              onClick={() => onViewSubject(s.subject)}
-              className="w-full flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-4 text-left hover:border-indigo-300 hover:shadow-md transition-all group"
+              className="w-full flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2 pl-4 hover:border-indigo-300 hover:shadow-md transition-all group"
             >
-              <div className={`size-10 rounded-xl bg-${color}-50 flex items-center justify-center shrink-0`}>
-                {mode === "onboarding" ? (
-                  <BookOpen className={`size-5 text-${color}-600`} />
-                ) : (
-                  <Trophy className={`size-5 text-${color}-600`} />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-slate-800 truncate">{s.subject}</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {s.count} lần · {new Date(s.last_used).toLocaleDateString("vi-VN")}
-                </p>
-              </div>
-              <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 transition-colors shrink-0" />
-            </button>
+              <button
+                onClick={() => onViewSubject(s.subject)}
+                className="flex-1 min-w-0 flex items-center gap-4 text-left py-2"
+              >
+                <div className={`size-10 rounded-xl bg-${color}-50 flex items-center justify-center shrink-0`}>
+                  {mode === "onboarding" ? (
+                    <BookOpen className={`size-5 text-${color}-600`} />
+                  ) : (
+                    <Trophy className={`size-5 text-${color}-600`} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-slate-800 truncate">{s.subject}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {s.count} lần · {new Date(s.last_used).toLocaleDateString("vi-VN")}
+                  </p>
+                </div>
+                <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 transition-colors shrink-0" />
+              </button>
+              <button
+                onClick={() => handleDeleteSubject(s.subject)}
+                disabled={deletingSubject === s.subject}
+                title="Xóa môn học này"
+                className="shrink-0 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40"
+              >
+                {deletingSubject === s.subject ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              </button>
+            </div>
           ))}
         </div>
       )}
@@ -974,7 +1302,11 @@ function SubjectDetailScreen({
 }) {
   const [analyses, setAnalyses] = useState<ExamAnalysisSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const color = mode === "onboarding" ? "indigo" : "emerald";
+
+  const preview = useDocumentPreview();
+  const [previewFilename, setPreviewFilename] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -983,6 +1315,24 @@ function SubjectDetailScreen({
       .catch(() => setAnalyses([]))
       .finally(() => setLoading(false));
   }, [subject]);
+
+  async function handleDeleteAnalysis(a: ExamAnalysisSummary) {
+    if (!window.confirm(`Xóa tài liệu "${a.filename}"? Hành động này không thể hoàn tác.`)) return;
+    setDeletingId(a.id);
+    try {
+      await deleteExamAnalysis(a.id);
+      setAnalyses((prev) => prev.filter((x) => x.id !== a.id));
+    } catch {
+      window.alert("Xóa thất bại, vui lòng thử lại.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  function handlePreview(a: ExamAnalysisSummary) {
+    setPreviewFilename(a.filename);
+    void preview.open(a.id);
+  }
 
   return (
     <div className="space-y-5">
@@ -1002,23 +1352,52 @@ function SubjectDetailScreen({
       ) : (
         <div className="space-y-3">
           {analyses.map((a) => (
-            <button
+            <div
               key={a.id}
-              onClick={() => onViewAnalysis(a)}
-              className="w-full flex items-center gap-4 rounded-xl border border-slate-200 bg-white p-4 text-left hover:border-indigo-300 hover:shadow transition-all group"
+              className="w-full flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 pl-4 hover:border-indigo-300 hover:shadow transition-all group"
             >
-              <FileText className={`size-5 text-${color}-500 shrink-0`} />
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-slate-800 truncate text-sm">{a.filename}</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {new Date(a.created_at).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                  {" · "}{a.mastery_updates_count} mastery cập nhật
-                </p>
-              </div>
-              <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 shrink-0" />
-            </button>
+              <button
+                onClick={() => onViewAnalysis(a)}
+                className="flex-1 min-w-0 flex items-center gap-4 text-left py-2"
+              >
+                <FileText className={`size-5 text-${color}-500 shrink-0`} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-slate-800 truncate text-sm">{a.filename}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {new Date(a.created_at).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {" · "}{a.mastery_updates_count} mastery cập nhật
+                  </p>
+                </div>
+                <ChevronRight className="size-4 text-slate-400 group-hover:text-indigo-500 shrink-0" />
+              </button>
+              <button
+                onClick={() => handlePreview(a)}
+                title="Xem lại tài liệu gốc"
+                className="shrink-0 p-2 text-slate-300 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors"
+              >
+                <Eye className="size-4" />
+              </button>
+              <button
+                onClick={() => handleDeleteAnalysis(a)}
+                disabled={deletingId === a.id}
+                title="Xóa tài liệu này"
+                className="shrink-0 p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40"
+              >
+                {deletingId === a.id ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+              </button>
+            </div>
           ))}
         </div>
+      )}
+
+      {preview.isOpen && (
+        <DocumentPreviewModal
+          filename={previewFilename}
+          url={preview.url}
+          loading={preview.loading}
+          error={preview.error}
+          onClose={preview.close}
+        />
       )}
     </div>
   );
@@ -1040,19 +1419,102 @@ export function PersonalizedLearningPage({ mode }: { mode: "onboarding" | "post_
 // Flow 1: Onboarding (Bắt đầu học mới)
 // ──────────────────────────────────────────────────────────────────────────
 function OnboardingFlow() {
-  const [screen, setScreen] = useState<OnboardingScreen>("subject_list");
+  const draftOnMount = useRef(loadOnboardingDraft()).current;
+
+  const [screen, setScreen] = useState<OnboardingScreen>(draftOnMount.screen ?? "subject_list");
   const [viewingSubject, setViewingSubject] = useState<string | null>(null);
 
+  // File gốc không thể lưu lại qua sessionStorage — nhưng ngay khi phân tích tài liệu, file đã
+  // được lưu tạm ở backend (temp_file_id, một chuỗi ngắn lưu được bình thường), nên khi quay lại
+  // giữa chừng vẫn dùng lại được file đó mà không cần chọn lại. Chỉ khi thiếu temp_file_id (VD
+  // nháp cũ từ trước khi có tính năng này) mới cần yêu cầu chọn lại.
   const [files, setFiles] = useState<File[]>([]);
-  const [analysis, setAnalysis] = useState<DocumentAnalysisResult | null>(null);
-  const [selectedGoal, setSelectedGoal] = useState<string>("");
-  const [customGoal, setCustomGoal] = useState<string>("");
-  const [quiz, setQuiz] = useState<QuizQuestion[]>([]);
-  const [topicSummary, setTopicSummary] = useState("");
-  const [answers, setAnswers] = useState<Record<number, string>>({});
-  const [quizSubmitted, setQuizSubmitted] = useState(false);
-  const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>([]);
+  const [tempFileId, setTempFileId] = useState<string | null>(draftOnMount.tempFileId ?? null);
+  const [needsFileReattach, setNeedsFileReattach] = useState(
+    Boolean(
+      !draftOnMount.tempFileId && draftOnMount.analysis && draftOnMount.screen &&
+      draftOnMount.screen !== "subject_list" && draftOnMount.screen !== "upload_and_info"
+    )
+  );
+  const previouslyAttachedFileNames = draftOnMount.fileNames ?? [];
+
+  const [analysis, setAnalysis] = useState<DocumentAnalysisResult | null>(draftOnMount.analysis ?? null);
+  const [selectedGoal, setSelectedGoal] = useState<string>(draftOnMount.selectedGoal ?? "");
+  const [customGoal, setCustomGoal] = useState<string>(draftOnMount.customGoal ?? "");
+  const [quiz, setQuiz] = useState<QuizQuestion[]>(draftOnMount.quiz ?? []);
+  const [topicSummary, setTopicSummary] = useState(draftOnMount.topicSummary ?? "");
+  const [answers, setAnswers] = useState<Record<number, string>>(draftOnMount.answers ?? {});
+  const [quizSubmitted, setQuizSubmitted] = useState(draftOnMount.quizSubmitted ?? false);
+  const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>(draftOnMount.quizAnswers ?? []);
   const [finalResult, setFinalResult] = useState<ExamAnalysisDetail | null>(null);
+
+  // Vị trí hiện tại trong chương trình (mục lục — tick 1 điểm mốc + có bị hổng hay không)
+  const [curriculumTopic, setCurriculumTopic] = useState<string | null>(draftOnMount.curriculumTopic ?? null);
+  const [onTrack, setOnTrack] = useState<boolean | null>(draftOnMount.onTrack ?? null);
+
+  // Minh chứng năng lực (bảng điểm / chứng chỉ / bài kiểm tra đã làm) — file cũng không lưu lại được
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceChecking, setEvidenceChecking] = useState(false);
+  const [evidenceResult, setEvidenceResult] = useState<CompetencyEvidenceResult | null>(draftOnMount.evidenceResult ?? null);
+  const [evidenceError, setEvidenceError] = useState("");
+  const [evidenceScore, setEvidenceScore] = useState(draftOnMount.evidenceScore ?? "");
+  const [evidenceMaxScore, setEvidenceMaxScore] = useState(draftOnMount.evidenceMaxScore ?? "");
+
+  // Quỹ thời gian cho lộ trình — số phút/ngày lấy từ Hồ sơ học sinh, không hỏi lại
+  const [deadline, setDeadline] = useState(draftOnMount.deadline ?? "");
+  const [startDate, setStartDate] = useState(draftOnMount.startDate ?? "");
+  const [minutesPerDay, setMinutesPerDay] = useState(60);
+  const [daysPerWeek, setDaysPerWeek] = useState(7);
+
+  useEffect(() => {
+    getStudentProfile()
+      .then((profile) => {
+        setMinutesPerDay(profile.study_minutes_per_day);
+        setDaysPerWeek(profile.study_days_per_week);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Lưu lại tiến trình đang làm dở mỗi khi có thay đổi, để không mất khi chuyển sang trang khác
+  useEffect(() => {
+    if (screen === "subject_list" || screen === "result") {
+      sessionStorage.removeItem(ONBOARDING_DRAFT_KEY);
+      return;
+    }
+    const draft: OnboardingDraft = {
+      screen, analysis, selectedGoal, customGoal, quiz, topicSummary, answers, quizSubmitted, quizAnswers,
+      curriculumTopic, onTrack, evidenceResult, evidenceScore, evidenceMaxScore, deadline, startDate, tempFileId,
+      fileNames: files.length > 0 ? files.map((f) => f.name) : previouslyAttachedFileNames,
+    };
+    try { sessionStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft)); } catch { /* ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screen, analysis, selectedGoal, customGoal, quiz, topicSummary, answers, quizSubmitted, quizAnswers,
+      curriculumTopic, onTrack, evidenceResult, evidenceScore, evidenceMaxScore, deadline, startDate, tempFileId, files]);
+
+  function resetOnboardingState() {
+    sessionStorage.removeItem(ONBOARDING_DRAFT_KEY);
+    if (tempFileId) void discardTempFile(tempFileId).catch(() => {});
+    setFiles([]);
+    setTempFileId(null);
+    setNeedsFileReattach(false);
+    setAnalysis(null);
+    setSelectedGoal("");
+    setCustomGoal("");
+    setQuiz([]);
+    setTopicSummary("");
+    setAnswers({});
+    setQuizSubmitted(false);
+    setQuizAnswers([]);
+    setCurriculumTopic(null);
+    setOnTrack(null);
+    setEvidenceFile(null);
+    setEvidenceResult(null);
+    setEvidenceError("");
+    setEvidenceScore("");
+    setEvidenceMaxScore("");
+    setDeadline("");
+    setStartDate("");
+  }
 
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("");
@@ -1087,7 +1549,19 @@ function OnboardingFlow() {
         setError(result.not_learning_message || "Tài liệu này không phải tài liệu học tập.");
         return;
       }
+      if (!result.has_clear_structure) {
+        setError(
+          result.structure_reason
+            ? `Không thể tạo lộ trình với tài liệu này: ${result.structure_reason}`
+            : "Tài liệu này không có chương/mục rõ ràng nên không thể tạo lộ trình học. Hãy thử tài liệu có chia chương/phần cụ thể."
+        );
+        return;
+      }
       setAnalysis(result);
+      setTempFileId(result.temp_file_id);
+      setNeedsFileReattach(false);
+      setCurriculumTopic(null);
+      setOnTrack(null);
 
       // Kiểm tra thứ tự ưu tiên: duplicate_file > multi-subject > level warning > mastery > duplicate roadmap
       if (result.duplicate_file) {
@@ -1111,6 +1585,37 @@ function OnboardingFlow() {
       setLoading(false);
       setLoadingMsg("");
     }
+  }
+
+  async function handleEvidenceFile(file: File) {
+    setEvidenceFile(file);
+    setEvidenceResult(null);
+    setEvidenceError("");
+    setEvidenceScore("");
+    setEvidenceMaxScore("");
+    setEvidenceChecking(true);
+    try {
+      const result = await analyzeCompetencyEvidence(file);
+      setEvidenceResult(result);
+      if (!result.is_competency_evidence) {
+        setEvidenceError(
+          result.reason || "File này không phải bảng điểm/chứng chỉ/bài kiểm tra hợp lệ."
+        );
+      }
+    } catch (e) {
+      setEvidenceError(getApiErrorMessage(e));
+    } finally {
+      setEvidenceChecking(false);
+    }
+  }
+
+  function handleContinueFromGoalStep() {
+    if (quiz.length > 0) {
+      // Đã có bài kiểm tra rồi — không tạo lại, chỉ điều hướng tới để xem/tiếp tục
+      setScreen("quiz");
+      return;
+    }
+    void handleGenerateQuiz();
   }
 
   async function handleGenerateQuiz() {
@@ -1137,8 +1642,9 @@ function OnboardingFlow() {
     }
   }
 
-  async function handleSubmitQuiz() {
-    if (!files.length || !analysis) return;
+  function handleFinishQuiz() {
+    // Chỉ chấm điểm + hiện kết quả tại chỗ — KHÔNG gọi API tạo lộ trình ngay, để người
+    // dùng có thể quay lại chỉnh thông tin mà không mất bài kiểm tra đã làm.
     const computed: QuizAnswer[] = quiz.map((q) => ({
       questionId: q.id,
       selectedOption: answers[q.id] ?? "",
@@ -1148,20 +1654,46 @@ function OnboardingFlow() {
     }));
     setQuizAnswers(computed);
     setQuizSubmitted(true);
+  }
+
+  async function handleGenerateRoadmap() {
+    if (!analysis) return;
+    if (!files.length && !tempFileId) {
+      setNeedsFileReattach(true);
+      setError("Vui lòng chọn lại file tài liệu (ở banner phía trên) trước khi tạo lộ trình.");
+      return;
+    }
+    setError("");
     setLoading(true);
     setLoadingMsg("Đang phân tích kết quả và sinh lộ trình học tập...");
     try {
       const quizResultsJson = JSON.stringify(
-        computed.map((a) => ({ topic: a.topic, correct: a.correct, difficulty: a.difficulty }))
+        quizAnswers.map((a) => ({ topic: a.topic, correct: a.correct, difficulty: a.difficulty }))
       );
-      const data = await submitExam(files[0], {
+      const curriculumPositionJson = curriculumTopic
+        ? JSON.stringify({ topic: curriculumTopic, on_track: onTrack ?? true })
+        : undefined;
+      // Ưu tiên dùng file đã lưu tạm ở backend (temp_file_id) — không cần upload lại toàn bộ file
+      const data = await submitExam(files.length ? files[0] : null, {
         mode: "onboarding",
         selectedGoal: effectiveGoal,
         subject: analysis.subject,
         quickQuizResults: quizResultsJson,
         rawTextForCrawl: analysis.raw_text.slice(0, 800),
         isCodeRelated: analysis.is_code_related,
+        curriculumPosition: curriculumPositionJson,
+        topics: analysis.topics.length ? JSON.stringify(analysis.topics) : undefined,
+        deadline: deadline || undefined,
+        startDate: startDate || undefined,
+        minutesPerDay,
+        daysPerWeek,
+        readingTimeHint: analysis.reading_time ? JSON.stringify(analysis.reading_time) : undefined,
+        examScore: evidenceResult?.evidence_type === "exam" && evidenceScore ? evidenceScore : undefined,
+        examMaxScore: evidenceResult?.evidence_type === "exam" && evidenceMaxScore ? evidenceMaxScore : undefined,
+        evidenceType: evidenceResult?.is_competency_evidence ? evidenceResult.evidence_type : undefined,
+        tempFileId: !files.length && tempFileId ? tempFileId : undefined,
       });
+      setTempFileId(null);
       setFinalResult(data);
       setScreen("result");
     } catch (e) {
@@ -1207,7 +1739,7 @@ function OnboardingFlow() {
     return (
       <SubjectListScreen
         mode="onboarding"
-        onNew={() => setScreen("upload_and_info")}
+        onNew={() => { resetOnboardingState(); setScreen("upload_and_info"); }}
         onBack={() => {}}
         onViewSubject={(s) => setViewingSubject(s)}
       />
@@ -1220,16 +1752,20 @@ function OnboardingFlow() {
         <button
           onClick={() => {
             if (screen === "upload_and_info") setScreen("subject_list");
-            else if (screen === "goal_selection") setScreen("upload_and_info");
+            else if (screen === "goal_selection") {
+              // Một khi đã tạo bài kiểm tra nhanh, không cho quay lại tải tài liệu mới nữa
+              if (quiz.length === 0) setScreen("upload_and_info");
+            }
             else if (screen === "quiz") setScreen("goal_selection");
             else if (screen === "result") setScreen("subject_list");
           }}
-          className="text-slate-500 hover:text-slate-800 transition-colors p-1"
+          disabled={screen === "goal_selection" && quiz.length > 0}
+          className="text-slate-500 hover:text-slate-800 transition-colors p-1 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-500"
         >
           <X className="size-5" />
         </button>
         <div>
-          <h2 className="font-bold text-slate-900 text-xl">Bắt đầu học mới</h2>
+          <h2 className="font-bold text-slate-900 text-xl">Lộ trình học</h2>
           <p className="text-sm text-slate-500">Hệ thống sẽ phân tích tài liệu và cá nhân hóa lộ trình cho bạn.</p>
         </div>
       </div>
@@ -1243,6 +1779,35 @@ function OnboardingFlow() {
           <button onClick={() => setError("")} className="ml-auto shrink-0 text-red-400 hover:text-red-700">
             <X className="size-4" />
           </button>
+        </div>
+      )}
+
+      {needsFileReattach && files.length === 0 && screen !== "upload_and_info" && screen !== "subject_list" && (
+        <div className="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 max-w-2xl mx-auto sm:flex-row sm:items-center">
+          <AlertCircle className="size-4 shrink-0 text-amber-500" />
+          <p className="flex-1">
+            Do vừa chuyển trang, vui lòng chọn lại file tài liệu để tiếp tục
+            {previouslyAttachedFileNames.length > 0 && (
+              <> (trước đó: <span className="font-medium">{previouslyAttachedFileNames.join(", ")}</span>)</>
+            )}
+            . Toàn bộ thông tin bạn đã điền vẫn được giữ nguyên.
+          </p>
+          <label className="shrink-0 inline-flex items-center gap-1.5 rounded-lg bg-amber-600 text-white px-3 py-1.5 text-xs font-semibold cursor-pointer hover:bg-amber-700 transition-colors">
+            <Upload className="size-3.5" /> Chọn lại file
+            <input
+              type="file"
+              multiple
+              className="hidden"
+              accept=".pdf,.docx,.txt,.jpg,.jpeg,.png"
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []);
+                if (picked.length) {
+                  setFiles(picked);
+                  setNeedsFileReattach(false);
+                }
+              }}
+            />
+          </label>
         </div>
       )}
 
@@ -1404,7 +1969,7 @@ function OnboardingFlow() {
 
       {/* Step 2: Goal selection */}
       {screen === "goal_selection" && analysis && (
-        <div className="max-w-xl mx-auto space-y-5">
+        <div className="max-w-5xl mx-auto space-y-5">
           <div className="rounded-xl bg-indigo-50 border border-indigo-200 p-4">
             <div className="flex items-center gap-2 mb-1">
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold bg-indigo-600 text-white rounded-full px-2.5 py-1">
@@ -1420,6 +1985,183 @@ function OnboardingFlow() {
                 ))}
               </div>
             )}
+            {analysis.reading_time && (
+              <p className="text-xs text-indigo-600 mt-2">
+                📖 Ước lượng chung (chưa cá nhân hóa): ~{analysis.reading_time.word_count.toLocaleString("vi-VN")} từ —
+                {" "}học sâu (đọc + ghi chú + bài tập) mất khoảng{" "}
+                {Math.round(analysis.reading_time.deep_study_minutes_min / 60)}–{Math.round(analysis.reading_time.deep_study_minutes_max / 60)} giờ
+              </p>
+            )}
+          </div>
+
+          <div className="grid gap-5 lg:grid-cols-2 items-start">
+          <div className="space-y-5">
+          {/* Tiến độ hiện tại — mục lục, tick 1 điểm mốc + phát hiện học lệch */}
+          {analysis.topics.length > 0 && (
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+              <div className="flex items-center gap-2">
+                <Layers className="size-4 text-indigo-600" />
+                <h3 className="font-semibold text-slate-800">Bạn đã học đến đâu rồi?</h3>
+              </div>
+              <p className="text-xs text-slate-400">
+                Chọn chương/mục mà chương trình đã dạy đến, để hệ thống biết bạn có đang bị học lệch hay không.
+              </p>
+              <div className="space-y-1.5">
+                {analysis.topics.map((topic) => {
+                  const isSelected = curriculumTopic === topic;
+                  const dimmed = curriculumTopic !== null && !isSelected;
+                  return (
+                    <div key={topic}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isSelected) { setCurriculumTopic(null); setOnTrack(null); }
+                          else { setCurriculumTopic(topic); setOnTrack(null); }
+                        }}
+                        className={`w-full flex items-center gap-2.5 text-left rounded-lg border px-3 py-2.5 text-sm transition-all
+                          ${isSelected ? "border-indigo-500 bg-indigo-50" : "border-slate-200 hover:border-indigo-200"}
+                          ${dimmed ? "opacity-35" : ""}`}
+                      >
+                        <span className={`inline-flex size-4 shrink-0 items-center justify-center rounded border-2
+                          ${isSelected ? "border-indigo-500 bg-indigo-500" : "border-slate-300"}`}>
+                          {isSelected && <CheckCircle2 className="size-3 text-white" />}
+                        </span>
+                        <span className={isSelected ? "font-medium text-indigo-900" : "text-slate-700"}>{topic}</span>
+                      </button>
+                      {isSelected && (
+                        <div className="mt-1.5 ml-1 flex flex-wrap items-center gap-2 rounded-lg bg-indigo-50/60 border border-indigo-100 px-3 py-2">
+                          <span className="text-xs text-indigo-700">Chương trình đã học đến đây — còn bạn thì sao?</span>
+                          <div className="flex gap-2 ml-auto">
+                            <button
+                              type="button"
+                              onClick={() => setOnTrack(true)}
+                              className={`text-xs rounded-full px-3 py-1 border font-medium transition-all
+                                ${onTrack === true ? "border-emerald-500 bg-emerald-500 text-white" : "border-emerald-300 text-emerald-700 hover:bg-emerald-50"}`}
+                            >
+                              Tôi đã học vững
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setOnTrack(false)}
+                              className={`text-xs rounded-full px-3 py-1 border font-medium transition-all
+                                ${onTrack === false ? "border-amber-500 bg-amber-500 text-white" : "border-amber-300 text-amber-700 hover:bg-amber-50"}`}
+                            >
+                              Tôi bị hổng / mất gốc
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          </div>
+
+          <div className="space-y-5">
+          {/* Minh chứng năng lực */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex items-center gap-2">
+              <FileText className="size-4 text-indigo-600" />
+              <h3 className="font-semibold text-slate-800">Minh chứng năng lực (không bắt buộc)</h3>
+            </div>
+            <p className="text-xs text-slate-400">Bảng điểm, chứng chỉ, hoặc bài kiểm tra bạn đã làm — giúp hệ thống đánh giá đúng năng lực hiện tại.</p>
+            {!evidenceFile && !evidenceResult ? (
+              <label className="flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 px-4 py-4 text-sm text-slate-500 cursor-pointer hover:border-indigo-300 hover:bg-slate-50 transition-all">
+                <Upload className="size-4" /> Chọn file minh chứng
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.docx,.txt,.jpg,.jpeg,.png"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleEvidenceFile(f); }}
+                />
+              </label>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                  <FileText className="size-4 text-slate-400 shrink-0" />
+                  <span className="truncate flex-1">{evidenceFile?.name ?? "Đã xác thực trước đó (chuyển trang nên không hiện lại tên file)"}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setEvidenceFile(null); setEvidenceResult(null); setEvidenceError(""); }}
+                    className="text-slate-400 hover:text-red-500 shrink-0"
+                  >
+                    <X className="size-4" />
+                  </button>
+                </div>
+                {evidenceChecking && <p className="text-xs text-slate-400">Đang xác thực tài liệu...</p>}
+                {evidenceError && <p className="text-xs text-red-600">{evidenceError}</p>}
+                {evidenceResult?.is_competency_evidence && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-emerald-600">
+                      ✓ Đã xác thực: {
+                        evidenceResult.evidence_type === "transcript" ? "Bảng điểm" :
+                        evidenceResult.evidence_type === "certificate" ? "Chứng chỉ" :
+                        evidenceResult.evidence_type === "exam" ? "Bài kiểm tra đã làm" : "Minh chứng năng lực"
+                      }
+                    </p>
+                    {evidenceResult.evidence_type === "exam" && (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          placeholder="Điểm đạt được"
+                          value={evidenceScore}
+                          onChange={(e) => setEvidenceScore(e.target.value)}
+                          className="w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        />
+                        <span className="text-slate-400">/</span>
+                        <input
+                          type="number"
+                          placeholder="Điểm tối đa"
+                          value={evidenceMaxScore}
+                          onChange={(e) => setEvidenceMaxScore(e.target.value)}
+                          className="w-28 rounded-lg border border-slate-300 px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Quỹ thời gian */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex items-center gap-2">
+              <Calendar className="size-4 text-indigo-600" />
+              <h3 className="font-semibold text-slate-800">Quỹ thời gian cho lộ trình</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">Ngày bắt đầu (không bắt buộc, mặc định hôm nay)</label>
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 mb-1 block">Hạn mục tiêu (không bắt buộc)</label>
+                <input
+                  type="date"
+                  value={deadline}
+                  onChange={(e) => setDeadline(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-slate-500">
+              Thời gian học mỗi ngày: <span className="font-medium text-slate-700">{minutesPerDay} phút</span> (theo Hồ sơ học sinh — đổi ở đó nếu muốn thay đổi; đây là mức trung bình, lộ trình có thể co giãn theo độ khó từng ngày)
+            </p>
+            {deadline && (() => {
+              const days = Math.ceil((new Date(deadline).getTime() - Date.now()) / 86_400_000);
+              const weeks = Math.max(1, Math.round(days / 7));
+              return days > 0
+                ? <p className="text-xs text-indigo-600">Còn lại: khoảng {weeks} tuần</p>
+                : <p className="text-xs text-red-500">Ngày đã chọn ở trong quá khứ, vui lòng chọn lại.</p>;
+            })()}
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
@@ -1429,7 +2171,7 @@ function OnboardingFlow() {
             </div>
 
             <div className="grid gap-2 sm:grid-cols-2">
-              {analysis.suggested_goals.map((goal) => {
+              {[...analysis.suggested_goals, ...FIXED_GOAL_OPTIONS.filter((g) => !analysis.suggested_goals.includes(g))].map((goal) => {
                 const isDisabled = customGoal.trim().length > 0;
                 const isSelected = selectedGoal === goal && !isDisabled;
                 return (
@@ -1464,11 +2206,19 @@ function OnboardingFlow() {
               {customGoal && <p className="text-xs text-indigo-600 mt-1">✓ Đang dùng mục tiêu tùy chỉnh</p>}
             </div>
           </div>
+          </div>
+          </div>
 
           <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setScreen("upload_and_info")}>Quay lại</Button>
-            <Button onClick={handleGenerateQuiz} isLoading={loading} className="flex-1" disabled={!effectiveGoal}>
-              {loading ? loadingMsg : <><BrainCircuit className="size-4" /> Tạo bài kiểm tra nhanh</>}
+            {quiz.length === 0 && (
+              <Button variant="secondary" onClick={() => setScreen("upload_and_info")}>Quay lại</Button>
+            )}
+            <Button onClick={handleContinueFromGoalStep} isLoading={loading} className="flex-1" disabled={!effectiveGoal}>
+              {loading
+                ? loadingMsg
+                : quiz.length > 0
+                  ? <><ArrowRight className="size-4" /> Tiếp tục bài kiểm tra</>
+                  : <><BrainCircuit className="size-4" /> Tạo bài kiểm tra nhanh</>}
             </Button>
           </div>
           {!effectiveGoal && <p className="text-xs text-slate-400 text-center">Chọn hoặc nhập mục tiêu để tiếp tục</p>}
@@ -1510,7 +2260,7 @@ function OnboardingFlow() {
                   </div>
                 </div>
               ))}
-              <Button onClick={handleSubmitQuiz} className="w-full" disabled={Object.keys(answers).length < quiz.length}>
+              <Button onClick={handleFinishQuiz} className="w-full" disabled={Object.keys(answers).length < quiz.length}>
                 <Trophy className="size-4" /> Nộp bài
               </Button>
               {Object.keys(answers).length < quiz.length && (
@@ -1552,11 +2302,20 @@ function OnboardingFlow() {
                   </div>
                 );
               })}
-              {loading && (
-                <div className="flex items-center gap-2 text-sm text-slate-500 justify-center">
-                  <Loader2 className="size-4 animate-spin" /> {loadingMsg}
+              {error && (
+                <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+                  <AlertCircle className="size-4 shrink-0 mt-0.5 text-red-500" />
+                  <p>{error}</p>
                 </div>
               )}
+              <div className="flex gap-3">
+                <Button variant="secondary" onClick={() => setScreen("goal_selection")} disabled={loading}>
+                  Quay lại chỉnh thông tin
+                </Button>
+                <Button onClick={handleGenerateRoadmap} isLoading={loading} className="flex-1">
+                  {loading ? loadingMsg : <><Flag className="size-4" /> Tạo lộ trình học</>}
+                </Button>
+              </div>
             </div>
           )}
         </div>

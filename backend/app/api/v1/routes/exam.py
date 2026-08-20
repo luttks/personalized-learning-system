@@ -21,22 +21,26 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from uuid import UUID
 from typing import Annotated, Any, List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_student
 from app.core.config import settings
 from app.db.session import get_db_session
+from app.models.content import Course, CourseStatus
 from app.models.exam_analysis_model import ExamAnalysis
 from app.models.personalized_roadmap import PersonalizedRoadmap
 from app.models.user import User
 from app.services.exam_service import (
     ALL_SUPPORTED_EXTS,
+    analyze_competency_evidence,
     analyze_document_for_learning,
     analyze_multiple_documents,
     generate_diagnostic_quiz,
@@ -55,6 +59,11 @@ from app.services.learner_service import (
     record_learning_event,
 )
 from app.services.student_profile_service import get_student_profile
+from app.services.temp_upload_service import (
+    discard_temp_file,
+    read_temp_file,
+    save_temp_file,
+)
 from app.schemas.learner import LearningEventRequest
 
 logger = logging.getLogger(__name__)
@@ -69,6 +78,19 @@ DatabaseSession = Annotated[AsyncSession, Depends(get_db_session)]
 # Schemas
 # ---------------------------------------------------------------------------
 
+class ReadingTimeEstimate(BaseModel):
+    """Ước lượng thời gian đọc tài liệu — tính bằng code (đếm từ), KHÔNG dùng LLM, chưa cá nhân hóa."""
+    word_count: int
+    survey_minutes_min: int
+    survey_minutes_max: int
+    general_minutes_min: int
+    general_minutes_max: int
+    technical_minutes_min: int
+    technical_minutes_max: int
+    deep_study_minutes_min: int
+    deep_study_minutes_max: int
+
+
 class DocumentAnalysisResponse(BaseModel):
     """Kết quả phân tích tài liệu — bước đầu Luồng 1."""
     is_learning_doc: bool
@@ -82,6 +104,10 @@ class DocumentAnalysisResponse(BaseModel):
     raw_text: str  # Dùng cho bước sinh quiz
     ocr_engine: str
     not_learning_message: str | None = None
+    has_clear_structure: bool = True  # False nếu tài liệu không chia chương/mục rõ ràng
+    structure_reason: str | None = None  # Lý do khi has_clear_structure=False
+    reading_time: ReadingTimeEstimate | None = None
+    temp_file_id: str | None = None  # Tham chiếu file đã lưu tạm — dùng khi nộp bài cuối cùng
     document_level: int | None = None
     level_gap: str | None = None  # "exceeds_user", "below_user", "match"
     warning_message: str | None = None
@@ -93,6 +119,13 @@ class DocumentAnalysisResponse(BaseModel):
     existing_analysis_id: str | None = None  # ID phân tích trước có cùng hash
     duplicate_subject: str | None = None   # Tên môn của phân tích trước
     duplicate_created_at: str | None = None  # Ngày tạo phân tích trước
+
+
+class CompetencyEvidenceResponse(BaseModel):
+    """Kết quả xác thực tài liệu minh chứng năng lực (Luồng 1 — Nhóm 2)."""
+    is_competency_evidence: bool
+    evidence_type: str  # "transcript" | "certificate" | "exam" | "other"
+    reason: str | None = None
 
 
 class QuizGenerateRequest(BaseModel):
@@ -309,13 +342,17 @@ async def analyze_document(
         file_bytes = await file.read()
         if not file_bytes:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"File '{filename}' rỗng.")
-        if len(file_bytes) > 20 * 1024 * 1024:
-            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"File '{filename}' quá lớn (tối đa 20MB).")
+        if len(file_bytes) > 100 * 1024 * 1024:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"File '{filename}' quá lớn (tối đa 100MB).")
         # Tính SHA-256 hash của file để kiểm tra trùng lập
         import hashlib
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         all_hashes.append(file_hash)
         all_file_data.append((file_bytes, filename))
+
+    # Lưu tạm file đầu tiên (file thực sự được dùng khi nộp bài cuối cùng) — để nếu người dùng
+    # chuyển sang trang khác rồi quay lại, không cần chọn lại file.
+    temp_file_id = save_temp_file(all_file_data[0][0], all_file_data[0][1], str(current_user.id))
 
     try:
         if len(all_file_data) == 1:
@@ -340,6 +377,9 @@ async def analyze_document(
             is_learning_doc = result.get("is_learning_doc", True)
             not_learning_message = result.get("not_learning_message")
             document_level = result.get("document_level")
+            has_clear_structure = result.get("has_clear_structure", True)
+            structure_reason = result.get("structure_reason")
+            reading_time = result.get("reading_time")
         else:
             # Multi file
             merged = await analyze_multiple_documents(
@@ -361,6 +401,9 @@ async def analyze_document(
             is_learning_doc = True
             not_learning_message = None
             document_level = None
+            has_clear_structure = merged.get("has_clear_structure", True)
+            structure_reason = merged.get("structure_reason")
+            reading_time = merged.get("reading_time")
 
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
@@ -419,6 +462,10 @@ async def analyze_document(
         raw_text=raw_text,
         ocr_engine=ocr_engine,
         not_learning_message=not_learning_message,
+        has_clear_structure=has_clear_structure,
+        temp_file_id=temp_file_id,
+        structure_reason=structure_reason,
+        reading_time=ReadingTimeEstimate(**reading_time) if reading_time else None,
         document_level=document_level,
         level_gap=level_gap,
         warning_message=warning_message,
@@ -428,6 +475,52 @@ async def analyze_document(
         existing_analysis_id=existing_analysis_id,
         duplicate_subject=duplicate_subject,
         duplicate_created_at=duplicate_created_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Luồng 1 — Nhóm 2: Xác thực tài liệu minh chứng năng lực (bảng điểm/chứng chỉ/bài kiểm tra)
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/analyze-competency-evidence",
+    response_model=CompetencyEvidenceResponse,
+    summary="[Luồng 1] Xác thực tài liệu minh chứng năng lực do người dùng upload",
+)
+async def analyze_competency_evidence_route(
+    current_user: CurrentStudent,
+    file: Annotated[UploadFile, File(description="Bảng điểm / chứng chỉ / bài kiểm tra đã làm")],
+) -> CompetencyEvidenceResponse:
+    filename = file.filename or "upload"
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALL_SUPPORTED_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Định dạng '{ext}' không được hỗ trợ. Chấp nhận: JPG, PNG, PDF, DOCX, TXT.",
+        )
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
+    if len(file_bytes) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File quá lớn (tối đa 100MB).")
+
+    try:
+        result = await analyze_competency_evidence(
+            file_bytes=file_bytes,
+            filename=filename,
+            gemini_api_keys=settings.gemini_api_keys,
+            llm_api_keys=settings.llm_api_keys,
+            llm_base_url=settings.llm_base_url,
+            llm_model=settings.llm_model,
+        )
+    except Exception as e:
+        logger.error(f"Competency evidence analysis error: {e}")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Lỗi xác thực tài liệu. Vui lòng thử lại.") from e
+
+    return CompetencyEvidenceResponse(
+        is_competency_evidence=result["is_competency_evidence"],
+        evidence_type=result["evidence_type"],
+        reason=result["reason"],
     )
 
 
@@ -557,6 +650,16 @@ async def submit_exam(
     subject: Annotated[str | None, Form()] = None,
     raw_text_for_crawl: Annotated[str | None, Form()] = None,
     is_code_related: Annotated[str, Form()] = "false",
+    # Luồng 1 — vị trí hiện tại trong chương trình + thời hạn/quỹ thời gian mục tiêu
+    curriculum_position: Annotated[str | None, Form()] = None,  # JSON: {"topic": str, "on_track": bool}
+    topics: Annotated[str | None, Form()] = None,  # JSON: toàn bộ mục lục tài liệu theo đúng thứ tự
+    deadline: Annotated[str | None, Form()] = None,  # ISO date YYYY-MM-DD
+    start_date: Annotated[str | None, Form()] = None,  # ISO date YYYY-MM-DD — mặc định hôm nay
+    minutes_per_day: Annotated[str | None, Form()] = None,
+    days_per_week: Annotated[str | None, Form()] = None,
+    evidence_type: Annotated[str | None, Form()] = None,  # "transcript"|"certificate"|"exam"|"other"
+    reading_time_hint: Annotated[str | None, Form()] = None,  # JSON: kết quả estimate_reading_time() từ bước phân tích
+    temp_file_id: Annotated[str | None, Form()] = None,  # Dùng lại file đã lưu tạm ở bước phân tích, khỏi phải upload lại
     # Luồng 2 fields
     exam_score: Annotated[str | None, Form()] = None,
     exam_max_score: Annotated[str | None, Form()] = None,
@@ -570,14 +673,25 @@ async def submit_exam(
       (điểm số đã được gộp vào bước chọn câu hỏi, không cần bước riêng nữa)
     """
     filename = file.filename if file else "upload"
-    ext = os.path.splitext(filename)[1].lower() if file else ""
-    if file and ext not in ALL_SUPPORTED_EXTS:
+    file_bytes = await file.read() if file else b""
+
+    # Nếu không upload file trực tiếp, thử dùng lại file đã lưu tạm ở bước phân tích tài liệu
+    if not file and temp_file_id:
+        staged = read_temp_file(temp_file_id, str(current_user.id))
+        if staged is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="File tạm đã hết hạn hoặc không tìm thấy. Vui lòng chọn lại file tài liệu.",
+            )
+        file_bytes, filename = staged
+
+    ext = os.path.splitext(filename)[1].lower() if file_bytes else ""
+    if file_bytes and ext not in ALL_SUPPORTED_EXTS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Định dạng '{ext}' không được hỗ trợ.",
         )
 
-    file_bytes = await file.read() if file else b""
     if file and not file_bytes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
 
@@ -605,8 +719,87 @@ async def submit_exam(
         except Exception:
             pass
 
+    # Parse vị trí hiện tại trong chương trình (chỉ 1 điểm mốc + có bị hổng hay không)
+    curriculum_position_parsed: dict | None = None
+    if curriculum_position:
+        try:
+            parsed_pos = json.loads(curriculum_position)
+            if isinstance(parsed_pos, dict) and parsed_pos.get("topic"):
+                curriculum_position_parsed = {
+                    "topic": str(parsed_pos["topic"]),
+                    "on_track": bool(parsed_pos.get("on_track", True)),
+                }
+        except Exception:
+            pass
+
+    deadline_date: date | None = None
+    if deadline:
+        try:
+            deadline_date = date.fromisoformat(deadline.strip())
+        except Exception:
+            pass
+
+    minutes_per_day_parsed = 60
+    if minutes_per_day:
+        try:
+            minutes_per_day_parsed = max(10, min(600, int(minutes_per_day)))
+        except Exception:
+            pass
+
+    days_per_week_parsed = 7
+    if days_per_week:
+        try:
+            days_per_week_parsed = max(1, min(7, int(days_per_week)))
+        except Exception:
+            pass
+
+    # Toàn bộ mục lục tài liệu (theo thứ tự) — dùng để tách phần đã học / cần học
+    topics_parsed: list[str] = []
+    if topics:
+        try:
+            topics_parsed = [str(t) for t in json.loads(topics) if str(t).strip()]
+        except Exception:
+            pass
+
+    # Ước lượng thời gian đọc đã tính ở bước phân tích tài liệu (Layer 0) — dùng làm ngữ cảnh
+    # tham khảo cho bước sinh lộ trình, không tính lại.
+    reading_time_parsed: dict | None = None
+    if reading_time_hint:
+        try:
+            reading_time_parsed = json.loads(reading_time_hint)
+        except Exception:
+            pass
+
+    # Tách "đã học" (loại khỏi lộ trình) và "cần học/ưu tiên" dựa trên vị trí đã tick:
+    # các mục TRƯỚC vị trí tick coi như đã học (trừ khi on_track=False → coi như cần ôn lại),
+    # mục TẠI và SAU vị trí tick coi như chưa học — ưu tiên đưa vào lộ trình.
+    learned_topics: list[str] = []
+    priority_topics: list[str] = list(topics_parsed)
+    if curriculum_position_parsed and curriculum_position_parsed["topic"] in topics_parsed:
+        idx = topics_parsed.index(curriculum_position_parsed["topic"])
+        if curriculum_position_parsed["on_track"]:
+            learned_topics = topics_parsed[:idx]
+            priority_topics = topics_parsed[idx:]
+        else:
+            # Bị hổng — không loại phần trước mốc, ưu tiên ôn lại toàn bộ từ đầu đến mốc + phần sau
+            priority_topics = topics_parsed
+
     # Ensure learner profile
     learner = await ensure_learner_profile(session, current_user.id)
+
+    # Ghi nhận vị trí hiện tại + hạn mục tiêu vào LearnerProfile (chỉ luồng onboarding)
+    if mode == "onboarding" and (curriculum_position_parsed or deadline_date):
+        if deadline_date:
+            learner.deadline = deadline_date
+        if curriculum_position_parsed:
+            learner.diagnostic_results = [
+                *[
+                    d for d in learner.diagnostic_results
+                    if not (isinstance(d, dict) and d.get("type") == "curriculum_position")
+                ],
+                {"type": "curriculum_position", **curriculum_position_parsed},
+            ]
+        learner.profile_version += 1
 
     # OCR + parse file (Luồng 1) hoặc parse từ raw_text (Luồng 2)
     parsed = {}
@@ -634,40 +827,25 @@ async def submit_exam(
         parsed["ocr_engine"] = "none"
         parsed["filename"] = filename
 
-    # AI Recommendation (Groq)
+    # AI Recommendation (Groq) — chỉ Luồng 2 (post_exam). Luồng 1 (onboarding) không dùng phân
+    # tích theo câu hỏi kiểu đề thi này nữa — tài liệu học không phải đề thi nên phân tích này
+    # không phù hợp; toàn bộ "vì sao học phần này" giờ nằm trong chính lộ trình sinh ra bên dưới.
     ai_rec: dict = {}
-    if settings.llm_api_key and settings.llm_model:
-        if mode == "post_exam" and selected_questions:
-            try:
-                selected_qs = json.loads(selected_questions)
-            except Exception:
-                selected_qs = []
+    if settings.llm_api_key and settings.llm_model and mode == "post_exam" and selected_questions:
+        try:
+            selected_qs = json.loads(selected_questions)
+        except Exception:
+            selected_qs = []
 
-            ai_rec = await get_ai_recommendation_groq(
-                questions=selected_qs,
-                score_ratio=score_ratio,
-                weak_areas=None,
-                gemini_api_keys=settings.gemini_api_keys,
-                llm_api_keys=settings.llm_api_keys,
-                base_url=settings.llm_base_url,
-                model=settings.llm_model,
-            )
-        elif mode == "onboarding":
-            questions = parsed.get("questions", [])
-            question_texts = [
-                f"{q.get('id', '')}: {q.get('content', '')[:300]}"
-                for q in questions
-            ]
-            if question_texts:
-                ai_rec = await get_ai_recommendation_groq(
-                    questions=question_texts,
-                    score_ratio=score_ratio,
-                    weak_areas=None,
-                    gemini_api_keys=settings.gemini_api_keys,
-                    llm_api_keys=settings.llm_api_keys,
-                    base_url=settings.llm_base_url,
-                    model=settings.llm_model,
-                )
+        ai_rec = await get_ai_recommendation_groq(
+            questions=selected_qs,
+            score_ratio=score_ratio,
+            weak_areas=None,
+            gemini_api_keys=settings.gemini_api_keys,
+            llm_api_keys=settings.llm_api_keys,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+        )
 
     # Crawl resources (general)
     crawl_query = raw_text_for_crawl or parsed.get("raw_markdown", "")[:500]
@@ -778,6 +956,10 @@ async def submit_exam(
         except Exception:
             pass
 
+    # Luồng onboarding: ưu tiên dùng mục lục thật (đã tách đã học/cần học theo vị trí đã tick);
+    # nếu người dùng không tick vị trí nào (topics_parsed rỗng), fallback về weak_topics như cũ.
+    roadmap_topics = priority_topics if priority_topics else weak_topics
+
     # Cho post_exam: chỉ sinh lộ trình nếu có "Không biết làm"
     should_generate_roadmap = mode == "onboarding"
     if mode == "post_exam" and selected_questions:
@@ -801,11 +983,18 @@ async def submit_exam(
             try:
                 inline_roadmap = await generate_learning_roadmap(
                     subject=subject or "Học tập tổng quát",
-                    weak_topics=weak_topics,
+                    weak_topics=roadmap_topics if mode == "onboarding" else weak_topics,
+                    learned_topics=learned_topics,
                     selected_goal=goal_for_roadmap,
                     score_ratio=score_ratio,
-                    minutes_per_day=60,
+                    minutes_per_day=minutes_per_day_parsed,
+                    days_per_week=days_per_week_parsed,
                     quick_quiz_results_str=quick_quiz_results,
+                    evidence_summary=evidence_type,
+                    curriculum_position=curriculum_position_parsed,
+                    deadline=deadline,
+                    start_date=start_date,
+                    reading_time=reading_time_parsed,
                     gemini_api_keys=settings.gemini_api_keys,
                     llm_api_keys=settings.llm_api_keys,
                     llm_base_url=settings.llm_base_url,
@@ -893,22 +1082,54 @@ async def submit_exam(
         except Exception as e:
             logger.warning(f"File save failed: {e}")
 
+    # File đã lưu chính thức (hoặc lưu thất bại) — dọn bản tạm, không cần giữ nữa
+    if temp_file_id:
+        discard_temp_file(temp_file_id, str(current_user.id))
+
     # Tính hash của file để lưu vào DB (phát hiện trùng lập sau này)
     import hashlib as _hashlib
     computed_file_hash: str | None = None
     if file_bytes:
         computed_file_hash = _hashlib.sha256(file_bytes).hexdigest()
 
+    # Gắn với Course thay vì lưu subject dạng chuỗi tự do rời rạc — tìm course nháp đã có
+    # của chính người dùng theo tên môn (không phân biệt hoa/thường), nếu chưa có thì tạo mới.
+    resolved_subject = subject or (ai_rec.get("_goal", "") if ai_rec else None)
+    course_id: UUID | None = None
+    if resolved_subject:
+        existing_course = (
+            await session.execute(
+                select(Course).where(
+                    Course.owner_id == current_user.id,
+                    func.lower(Course.subject) == resolved_subject.strip().lower(),
+                )
+            )
+        ).scalars().first()
+        if existing_course is None:
+            existing_course = Course(
+                owner_id=current_user.id,
+                title=resolved_subject.strip(),
+                subject=resolved_subject.strip(),
+                grade_level=12,  # placeholder cho môn học tổng quát (không phải K-12 cụ thể)
+                status=CourseStatus.DRAFT.value,
+            )
+            session.add(existing_course)
+            await session.flush()
+        course_id = existing_course.id
+
     # Lưu DB
     analysis = ExamAnalysis(
         learner_id=learner.id,
         filename=filename,
-        subject=subject or (ai_rec.get("_goal", "") if ai_rec else None),
+        subject=resolved_subject,
+        course_id=course_id,
         file_path=file_path,
         file_hash=computed_file_hash,
         ocr_engine=parsed.get("ocr_engine", "unknown"),
         question_count=parsed.get("question_count", 0),
         formula_count=parsed.get("formula_count", 0),
+        exam_score=score,
+        exam_max_score=max_score,
         questions_json=parsed.get("questions", []),
         raw_markdown=parsed.get("raw_markdown"),
         ai_recommendation_json={
@@ -917,6 +1138,19 @@ async def submit_exam(
             "_goal": selected_goal or ai_rec.get("_goal", ""),
             "_roadmap": inline_roadmap,
             "_solution_results": solution_results,
+            # Snapshot các bước người dùng đã điền — dùng để xem lại sau này (chỉ đọc, không sửa)
+            "_curriculum_position": curriculum_position_parsed,
+            "_deadline": deadline,
+            "_minutes_per_day": minutes_per_day_parsed,
+            "_evidence_type": evidence_type,
+            "_quiz_summary": (
+                {
+                    "correct": sum(1 for q in quiz_results_parsed if q.get("correct")),
+                    "total": len(quiz_results_parsed),
+                }
+                if quiz_results_parsed
+                else None
+            ),
         },
         resources_json=resources,
         mastery_updates_json=mastery_updates,
@@ -1036,13 +1270,90 @@ async def list_analyses_by_subject(
             question_count=a.question_count,
             formula_count=a.formula_count,
             ocr_engine=a.ocr_engine,
-            exam_score=None,
-            exam_max_score=None,
+            exam_score=a.exam_score,
+            exam_max_score=a.exam_max_score,
             mastery_updates_count=len(a.mastery_updates_json),
             created_at=a.created_at,
         )
         for a in analyses
     ]
+
+
+@router.delete("/temp-files/{temp_file_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def discard_staged_temp_file(
+    temp_file_id: str,
+    current_user: CurrentStudent,
+) -> None:
+    """Xóa file đã lưu tạm khi người dùng bỏ dở luồng (không nộp bài)."""
+    discard_temp_file(temp_file_id, str(current_user.id))
+
+
+def _delete_file_on_disk(file_path: str | None) -> None:
+    """Xóa file vật lý tương ứng một ExamAnalysis — best-effort, không chặn nếu đã mất/thiếu quyền."""
+    if not file_path:
+        return
+    try:
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+    except OSError as e:
+        logger.warning(f"Không thể xóa file '{file_path}': {e}")
+
+
+@router.delete("/subjects/{subject}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_subject(
+    subject: str,
+    current_user: CurrentStudent,
+    session: DatabaseSession,
+) -> None:
+    """Học viên tự xóa toàn bộ tài liệu/lộ trình của một môn học của chính mình."""
+    learner = await get_learner_profile(session, current_user.id)
+    if not learner:
+        return
+    result = await session.execute(
+        select(ExamAnalysis).where(
+            ExamAnalysis.learner_id == learner.id,
+            ExamAnalysis.subject == subject,
+        )
+    )
+    analyses = list(result.scalars().all())
+    if not analyses:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy môn học này.")
+    ids = [a.id for a in analyses]
+    await session.execute(delete(PersonalizedRoadmap).where(PersonalizedRoadmap.exam_analysis_id.in_(ids)))
+    await session.execute(delete(ExamAnalysis).where(ExamAnalysis.id.in_(ids)))
+    await session.commit()
+    for a in analyses:
+        _delete_file_on_disk(a.file_path)
+
+
+@router.delete("/{analysis_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_exam_analysis(
+    analysis_id: str,
+    current_user: CurrentStudent,
+    session: DatabaseSession,
+) -> None:
+    """Học viên tự xóa một tài liệu/bản phân tích của chính mình."""
+    learner = await get_learner_profile(session, current_user.id)
+    if not learner:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy.")
+    try:
+        uuid_id = UUID(analysis_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="ID không hợp lệ.")
+    result = await session.execute(
+        select(ExamAnalysis).where(
+            ExamAnalysis.id == uuid_id,
+            ExamAnalysis.learner_id == learner.id,
+        )
+    )
+    analysis = result.scalar_one_or_none()
+    if not analysis:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy.")
+    await session.execute(delete(PersonalizedRoadmap).where(PersonalizedRoadmap.exam_analysis_id == analysis.id))
+    file_path = analysis.file_path
+    await session.delete(analysis)
+    await session.commit()
+    _delete_file_on_disk(file_path)
 
 
 @router.get("", response_model=list[ExamAnalysisSummary])
@@ -1071,8 +1382,8 @@ async def list_exam_analyses(
             question_count=a.question_count,
             formula_count=a.formula_count,
             ocr_engine=a.ocr_engine,
-            exam_score=None,
-            exam_max_score=None,
+            exam_score=a.exam_score,
+            exam_max_score=a.exam_max_score,
             mastery_updates_count=len(a.mastery_updates_json),
             created_at=a.created_at,
         )
@@ -1086,7 +1397,6 @@ async def get_exam_analysis(
     current_user: CurrentStudent,
     session: DatabaseSession,
 ) -> ExamAnalysisDetail:
-    from uuid import UUID
     learner = await get_learner_profile(session, current_user.id)
     if not learner:
         raise HTTPException(status_code=404, detail="Chưa có learner profile.")
@@ -1116,8 +1426,8 @@ async def get_exam_analysis(
         question_count=analysis.question_count,
         formula_count=analysis.formula_count,
         ocr_engine=analysis.ocr_engine,
-        exam_score=None,
-        exam_max_score=None,
+        exam_score=analysis.exam_score,
+        exam_max_score=analysis.exam_max_score,
         questions=analysis.questions_json,
         raw_markdown=analysis.raw_markdown,
         ai_recommendation=ai_rec,
@@ -1127,4 +1437,34 @@ async def get_exam_analysis(
         phase_resources={},
         solution_results=solution_results,
         created_at=analysis.created_at,
+    )
+
+
+@router.get("/{analysis_id}/file")
+async def get_exam_analysis_file(
+    analysis_id: str,
+    current_user: CurrentStudent,
+    session: DatabaseSession,
+) -> FileResponse:
+    """Trả về file gốc đã upload (để xem lại) — chỉ chủ sở hữu mới xem được."""
+    learner = await get_learner_profile(session, current_user.id)
+    if not learner:
+        raise HTTPException(status_code=404, detail="Chưa có learner profile.")
+    try:
+        uuid_id = UUID(analysis_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="ID không hợp lệ.")
+    result = await session.execute(
+        select(ExamAnalysis).where(
+            ExamAnalysis.id == uuid_id,
+            ExamAnalysis.learner_id == learner.id,
+        )
+    )
+    analysis = result.scalar_one_or_none()
+    if not analysis or not analysis.file_path or not os.path.isfile(analysis.file_path):
+        raise HTTPException(status_code=404, detail="Không tìm thấy file gốc (có thể đã bị xóa).")
+    return FileResponse(
+        analysis.file_path,
+        filename=analysis.filename,
+        content_disposition_type="inline",
     )

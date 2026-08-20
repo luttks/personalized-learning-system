@@ -31,11 +31,10 @@ interface NavItem {
 const navigation: NavItem[] = [
   { to: "/", label: "Tổng quan", icon: Gauge },
   { to: "/student-profile", label: "Hồ sơ học sinh", icon: UserRound, roles: ["student"] },
-  { to: "/personalized/onboarding", label: "Bắt đầu học mới", icon: BookOpen, roles: ["student"] },
+  { to: "/personalized/onboarding", label: "Lộ trình học", icon: BookOpen, roles: ["student"] },
   { to: "/personalized/post-exam", label: "Cải thiện sau thi", icon: Trophy, roles: ["student"] },
   { to: "/roadmap", label: "Quản lý lộ trình", icon: Map, roles: ["student"] },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
-  { to: "/admin/subjects", label: "Quản lý môn học", icon: BookOpen, roles: ["admin"] },
 ];
 
 export function AppShell() {

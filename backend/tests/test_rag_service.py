@@ -6,7 +6,7 @@ def test_feature_hash_embedding_is_normalized_and_deterministic() -> None:
     second = feature_hash_embedding("Nghề nông trồng lúa nước")
 
     assert first == second
-    assert len(first) == 384
+    assert len(first) == 768
     assert abs(sum(value * value for value in first) - 1) < 0.000001
 
 

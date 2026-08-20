@@ -1,8 +1,8 @@
 import json
 
 from app.agents.learner.understanding_agent import (
+    ChatCompletionProvider,
     LearnerUnderstandingError,
-    OpenAICompatibleProvider,
 )
 from app.schemas.content import DocumentStructure
 
@@ -25,7 +25,7 @@ Quy tắc:
 
 
 async def analyze_with_llm(
-    provider: OpenAICompatibleProvider,
+    provider: ChatCompletionProvider,
     text: str,
     title: str,
 ) -> DocumentStructure:
