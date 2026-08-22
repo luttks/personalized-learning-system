@@ -65,7 +65,8 @@ from app.services.document_storage import (
     LocalDocumentStorage,
 )
 from app.services.rag_service import (
-    EMBEDDING_MODEL,
+    FALLBACK_EMBEDDING_MODEL,
+    GEMINI_EMBEDDING_MODEL,
     content_index_count,
     rebuild_content_index,
     search_content_chunks,
@@ -467,7 +468,9 @@ async def get_rag_index(
     return RagIndexResponse(
         course_version_id=course_version_id,
         chunk_count=count,
-        embedding_model=EMBEDDING_MODEL,
+        embedding_model=(
+            GEMINI_EMBEDDING_MODEL if settings.gemini_api_keys else FALLBACK_EMBEDDING_MODEL
+        ),
     )
 
 
@@ -487,7 +490,9 @@ async def create_rag_index(
     return RagIndexResponse(
         course_version_id=course_version_id,
         chunk_count=len(chunks),
-        embedding_model=EMBEDDING_MODEL,
+        embedding_model=(
+            GEMINI_EMBEDDING_MODEL if settings.gemini_api_keys else FALLBACK_EMBEDDING_MODEL
+        ),
     )
 
 

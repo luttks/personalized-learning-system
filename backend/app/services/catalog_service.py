@@ -31,7 +31,7 @@ from app.services.content_service import (
     get_analysis_for_manager,
     get_course_for_manager,
 )
-from app.services.rag_service import feature_hash_embedding, rebuild_content_index
+from app.services.rag_service import embed_text, rebuild_content_index
 
 
 class CatalogNotReadyError(Exception):
@@ -381,7 +381,7 @@ async def rebuild_course_catalog(
     previous_concept: CourseConcept | None = None
     concept_position = 0
     for chapter_index, chapter_data in enumerate(structure.chapters):
-        target = feature_hash_embedding(
+        target, _ = embed_text(
             f"{chapter_data.title}\n{chapter_data.summary}\n"
             + "\n".join(chapter_data.key_points)
         )
@@ -413,7 +413,7 @@ async def rebuild_course_catalog(
         concept_titles = chapter_data.key_points or [chapter_data.title]
         for concept_index, concept_title in enumerate(concept_titles):
             concept_position += 1
-            concept_target = feature_hash_embedding(concept_title)
+            concept_target, _ = embed_text(concept_title)
             concept_chunk = max(
                 chunks,
                 key=lambda chunk: vector_similarity(

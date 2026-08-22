@@ -7,10 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.learner.understanding_agent import (
     LearnerUnderstandingAgent,
     LearnerUnderstandingError,
-    OpenAICompatibleProvider,
 )
 from app.api.dependencies.auth import get_current_student
 from app.core.config import settings
+from app.core.llm_client import get_llm_client
 from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.learner import (
@@ -57,14 +57,7 @@ def get_understanding_agent() -> LearnerUnderstandingAgent:
                 "and LLM_MODEL."
             ),
         )
-    return LearnerUnderstandingAgent(
-        OpenAICompatibleProvider(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
-            timeout_seconds=settings.llm_timeout_seconds,
-        )
-    )
+    return LearnerUnderstandingAgent(get_llm_client())
 
 
 @router.get("/me", response_model=LearnerProfileResponse)

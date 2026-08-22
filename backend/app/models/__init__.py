@@ -23,17 +23,14 @@ from app.models.learner import (
     LearnerEvidence,
     LearnerProfile,
     LearnerTopicMastery,
+    MasteryHistory,
     Roadmap,
     RoadmapItem,
 )
 from app.models.learner_course_profile import LearnerCourseProfile
 from app.models.personalized_roadmap import PersonalizedRoadmap
 from app.models.refresh_token import RefreshToken
-from app.models.student_profile import (
-    ExplanationDepth,
-    LearningMode,
-    StudentProfile,
-)
+from app.models.student_profile import StudentProfile
 from app.models.user import User, UserRole
 
 __all__ = [
@@ -55,12 +52,11 @@ __all__ = [
     "ExamAnalysis",
     "DocumentJob",
     "DocumentJobStatus",
-    "ExplanationDepth",
     "LearnerCourseProfile",
     "LearnerEvidence",
     "LearnerProfile",
     "LearnerTopicMastery",
-    "LearningMode",
+    "MasteryHistory",
     "PersonalizedRoadmap",
     "RefreshToken",
     "Roadmap",

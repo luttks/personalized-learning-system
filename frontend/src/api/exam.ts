@@ -1,8 +1,26 @@
 import { apiClient } from "./client";
 
+// Các endpoint OCR/LLM (phân tích tài liệu, sinh quiz, tạo lộ trình...) có thể chạy
+// lâu hơn nhiều so với timeout mặc định 20s của apiClient, đặc biệt với file lớn cần OCR nhiều
+// trang (đo thực tế: PDF 115 trang mất ~5.5 phút, kể cả khi Gemini phải retry do lỗi tạm thời).
+// Dùng timeout riêng, dài hơn, cho các endpoint này.
+const AI_REQUEST_TIMEOUT_MS = 600_000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export interface ReadingTimeEstimate {
+  word_count: number;
+  survey_minutes_min: number;
+  survey_minutes_max: number;
+  general_minutes_min: number;
+  general_minutes_max: number;
+  technical_minutes_min: number;
+  technical_minutes_max: number;
+  deep_study_minutes_min: number;
+  deep_study_minutes_max: number;
+}
 
 export interface DocumentAnalysisResult {
   is_learning_doc: boolean;
@@ -16,6 +34,10 @@ export interface DocumentAnalysisResult {
   raw_text: string;
   ocr_engine: string;
   not_learning_message: string | null;
+  has_clear_structure: boolean;        // False nếu tài liệu không chia chương/mục rõ ràng
+  structure_reason: string | null;     // Lý do khi has_clear_structure=false
+  temp_file_id: string | null;         // Tham chiếu file đã lưu tạm — dùng khi nộp bài cuối cùng
+  reading_time: ReadingTimeEstimate | null; // Ước lượng thời gian đọc — tính bằng code, chưa cá nhân hóa
   document_level: number | null;
   level_gap: "exceeds_user" | "below_user" | "match" | null;
   warning_message: string | null;
@@ -26,44 +48,6 @@ export interface DocumentAnalysisResult {
   existing_analysis_id: string | null; // ID phân tích trước có cùng hash
   duplicate_subject: string | null;    // Tên môn của phân tích trước
   duplicate_created_at: string | null; // Ngày tạo phân tích trước
-  document_content: LearningDocumentContent;
-}
-
-export interface LearningDocumentBlock {
-  id: string;
-  sequence: number;
-  type: "heading" | "paragraph" | "table_row";
-  text: string;
-  page: number | null;
-  heading_path: string[];
-  locator: { start_offset: number; end_offset: number };
-}
-
-export interface LearningDocumentEvidence {
-  block_id: string;
-  start_offset: number;
-  end_offset: number;
-  quote: string;
-  confidence: number;
-}
-
-export interface LearningDocumentHighlight {
-  id: string;
-  concept: string;
-  importance: "must_learn" | "should_learn" | "reference";
-  reason: string;
-  lesson_number: number;
-  phase_number: number;
-  status: "not_started" | "in_progress" | "mastered";
-  evidence: LearningDocumentEvidence[];
-}
-
-export interface LearningDocumentContent {
-  version: number;
-  filename: string;
-  source_characters: number;
-  blocks: LearningDocumentBlock[];
-  highlights: LearningDocumentHighlight[];
 }
 
 export interface QuizQuestion {
@@ -142,21 +126,46 @@ export interface MasteryUpdate {
   confidence: number;
 }
 
+export interface RoadmapDayTopic {
+  title: string;
+  why: string;
+  activities: string;
+  minutes: number;
+  resource_type?: "video" | "exercise" | "reading" | "mixed";
+  location_hint?: string; // Vị trí ước lượng trong tài liệu gốc
+}
+
+export interface RoadmapDay {
+  day_number: number;
+  date: string; // ISO date
+  note?: string; // Nhận xét riêng biệt cho ngày này
+  topics: RoadmapDayTopic[];
+  total_minutes: number;
+}
+
 export interface RoadmapPhase {
   phase_number: number;
   title: string;
-  duration_weeks: number;
-  goal: string;
-  topics: string[];
-  daily_plan: string;
+  why?: string;
   milestone: string;
-  source_refs?: { highlight_id: string; concept: string; importance: string; block_ids: string[] }[];
+  search_query?: string;
+  days: RoadmapDay[];
 }
 
 export interface InlineRoadmap {
-  total_weeks: number;
   overview: string;
+  pacing_note?: string; // Nhận xét lệch pha giữa khối lượng tài liệu và quỹ thời gian
   phases: RoadmapPhase[];
+  feasible?: boolean;
+  feasibility_note?: string;
+  total_days?: number;
+  end_date?: string; // ISO date
+}
+
+export interface CompetencyEvidenceResult {
+  is_competency_evidence: boolean;
+  evidence_type: "transcript" | "certificate" | "exam" | "other";
+  reason: string | null;
 }
 
 export interface PhaseResources {
@@ -198,7 +207,6 @@ export interface ExamAnalysisDetail {
   phase_resources: Record<string, PhaseResources>;
   roadmap_error: string | null;         // Lỗi nếu sinh lộ trình thất bại
   solution_results: SolutionResult[];   // Per-question results for post_exam
-  document_content: LearningDocumentContent;
   created_at: string;
 }
 
@@ -251,7 +259,24 @@ export async function analyzeDocument(
   const response = await apiClient.post<DocumentAnalysisResult>(
     "/learners/me/exams/analyze-document",
     formData,
-    { headers: { "Content-Type": "multipart/form-data" } }
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: AI_REQUEST_TIMEOUT_MS }
+  );
+  return response.data;
+}
+
+/**
+ * Luồng 1 — Nhóm 2: Xác thực tài liệu minh chứng năng lực (bảng điểm/chứng chỉ/bài kiểm tra)
+ */
+export async function analyzeCompetencyEvidence(
+  file: File
+): Promise<CompetencyEvidenceResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await apiClient.post<CompetencyEvidenceResult>(
+    "/learners/me/exams/analyze-competency-evidence",
+    formData,
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: AI_REQUEST_TIMEOUT_MS }
   );
   return response.data;
 }
@@ -268,7 +293,7 @@ export async function parseExamDocument(
   const response = await apiClient.post<ParseExamResponse>(
     "/learners/me/exams/parse-exam",
     formData,
-    { headers: { "Content-Type": "multipart/form-data" } }
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: AI_REQUEST_TIMEOUT_MS }
   );
   return response.data;
 }
@@ -284,7 +309,8 @@ export async function generateQuiz(payload: {
 }): Promise<{ quiz: QuizQuestion[]; topic_summary: string; quiz_skipped: boolean }> {
   const response = await apiClient.post<{ quiz: QuizQuestion[]; topic_summary: string; quiz_skipped: boolean }>(
     "/learners/me/exams/generate-quiz",
-    payload
+    payload,
+    { timeout: AI_REQUEST_TIMEOUT_MS }
   );
   return response.data;
 }
@@ -294,7 +320,7 @@ export async function generateQuiz(payload: {
  * Post-exam: điểm số đã được gộp vào cùng payload, không cần bước riêng
  */
 export async function submitExam(
-  file: File,
+  file: File | null,
   options: {
     mode?: "onboarding" | "post_exam";
     // Luồng 1
@@ -303,16 +329,26 @@ export async function submitExam(
     subject?: string;
     rawTextForCrawl?: string;
     isCodeRelated?: boolean;
+    // Luồng 1 — vị trí hiện tại trong chương trình + thời hạn/quỹ thời gian mục tiêu
+    curriculumPosition?: string;
+    topics?: string;
+    deadline?: string;
+    startDate?: string;
+    minutesPerDay?: number;
+    daysPerWeek?: number;
+    evidenceType?: string;
+    readingTimeHint?: string;
+    // Dùng lại file đã lưu tạm ở bước phân tích tài liệu thay vì upload lại (file có thể là null nếu dùng cách này)
+    tempFileId?: string;
     // Luồng 2 (điểm số gộp vào bước 2 chọn câu)
     examScore?: string;
     examMaxScore?: string;
     selectedQuestions?: string;
     rawText?: string;
-    documentContent?: LearningDocumentContent;
   } = {}
 ): Promise<ExamAnalysisDetail> {
   const formData = new FormData();
-  formData.append("file", file);
+  if (file) formData.append("file", file);
   formData.append("mode", options.mode ?? "post_exam");
   formData.append("is_code_related", String(options.isCodeRelated ?? false));
 
@@ -320,16 +356,24 @@ export async function submitExam(
   if (options.quickQuizResults) formData.append("quick_quiz_results", options.quickQuizResults);
   if (options.subject) formData.append("subject", options.subject);
   if (options.rawTextForCrawl) formData.append("raw_text_for_crawl", options.rawTextForCrawl.slice(0, 1000));
+  if (options.curriculumPosition) formData.append("curriculum_position", options.curriculumPosition);
+  if (options.topics) formData.append("topics", options.topics);
+  if (options.deadline) formData.append("deadline", options.deadline);
+  if (options.startDate) formData.append("start_date", options.startDate);
+  if (options.tempFileId) formData.append("temp_file_id", options.tempFileId);
+  if (options.minutesPerDay !== undefined) formData.append("minutes_per_day", String(options.minutesPerDay));
+  if (options.daysPerWeek !== undefined) formData.append("days_per_week", String(options.daysPerWeek));
+  if (options.readingTimeHint) formData.append("reading_time_hint", options.readingTimeHint);
+  if (options.evidenceType) formData.append("evidence_type", options.evidenceType);
   if (options.examScore !== undefined) formData.append("exam_score", options.examScore);
   if (options.examMaxScore !== undefined) formData.append("exam_max_score", options.examMaxScore);
   if (options.selectedQuestions) formData.append("selected_questions", options.selectedQuestions);
   if (options.rawText) formData.append("raw_text", options.rawText);
-  if (options.documentContent) formData.append("document_content", JSON.stringify(options.documentContent));
 
   const response = await apiClient.post<ExamAnalysisDetail>(
     "/learners/me/exams",
     formData,
-    { headers: { "Content-Type": "multipart/form-data" } }
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: AI_REQUEST_TIMEOUT_MS }
   );
   return response.data;
 }
@@ -365,4 +409,25 @@ export async function listExamAnalyses(limit = 20, offset = 0): Promise<ExamAnal
 export async function getExamAnalysis(id: string): Promise<ExamAnalysisDetail> {
   const response = await apiClient.get<ExamAnalysisDetail>(`/learners/me/exams/${id}`);
   return response.data;
+}
+
+/** Xóa toàn bộ tài liệu/lộ trình của một môn học (chỉ dữ liệu của chính người dùng) */
+export async function deleteSubject(subject: string): Promise<void> {
+  await apiClient.delete(`/learners/me/exams/subjects/${encodeURIComponent(subject)}`);
+}
+
+/** Xóa một tài liệu/bản phân tích cụ thể (chỉ dữ liệu của chính người dùng) */
+export async function deleteExamAnalysis(id: string): Promise<void> {
+  await apiClient.delete(`/learners/me/exams/${id}`);
+}
+
+/** Xóa file đã lưu tạm khi người dùng bỏ dở luồng (không nộp bài) */
+export async function discardTempFile(tempFileId: string): Promise<void> {
+  await apiClient.delete(`/learners/me/exams/temp-files/${tempFileId}`);
+}
+
+/** Lấy file gốc đã upload (để xem lại) dạng Blob — dùng để hiển thị trong modal xem trước */
+export async function getExamAnalysisFileBlob(id: string): Promise<Blob> {
+  const response = await apiClient.get(`/learners/me/exams/${id}/file`, { responseType: "blob" });
+  return response.data as Blob;
 }

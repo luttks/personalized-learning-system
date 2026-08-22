@@ -9,6 +9,7 @@ from app.models.learner import (
     LearnerEvidence,
     LearnerProfile,
     LearnerTopicMastery,
+    MasteryHistory,
     Roadmap,
     RoadmapItem,
 )
@@ -143,6 +144,7 @@ async def record_learning_event(
         )
         session.add(mastery)
 
+    old_score = mastery.mastery_score
     mastery.mastery_score = update_mastery(
         mastery.mastery_score,
         correct=event.correct,
@@ -154,6 +156,17 @@ async def record_learning_event(
     mastery.repeated_errors = 0 if event.correct else mastery.repeated_errors + 1
     mastery.last_assessed_at = now
     mastery.updated_at = now
+    session.add(
+        MasteryHistory(
+            learner_id=profile.id,
+            topic_id=event.topic_id,
+            old_score=old_score,
+            new_score=mastery.mastery_score,
+            delta=round(mastery.mastery_score - old_score, 4),
+            source=event.source,
+            created_at=now,
+        )
+    )
     session.add(
         LearnerEvidence(
             learner_id=profile.id,

@@ -104,6 +104,26 @@ class LearnerTopicMastery(Base):
     )
 
 
+class MasteryHistory(Base, UUIDPrimaryKeyMixin):
+    """Nhật ký thay đổi mastery — append-only, phục vụ đánh giá hiệu quả khuyến nghị + báo cáo tiến bộ theo thời gian."""
+    __tablename__ = "mastery_history"
+
+    learner_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("learner_profiles.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    topic_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    old_score: Mapped[float] = mapped_column(Float, nullable=False)
+    new_score: Mapped[float] = mapped_column(Float, nullable=False)
+    delta: Mapped[float] = mapped_column(Float, nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class Roadmap(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "roadmaps"
 

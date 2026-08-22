@@ -21,19 +21,6 @@ from app.db.base import (
 )
 
 
-class LearningMode(StrEnum):
-    THEORY_FIRST = "theory_first"
-    PRACTICE_FIRST = "practice_first"
-    STEP_BY_STEP = "step_by_step"
-    BALANCED = "balanced"
-
-
-class ExplanationDepth(StrEnum):
-    SHORT = "short"
-    MEDIUM = "medium"
-    DETAILED = "detailed"
-
-
 class EducationLevel(StrEnum):
     UNDER_UNIVERSITY = "under_university"
     UNIVERSITY = "university"
@@ -101,30 +88,6 @@ class StudentProfile(
 
     grade_level: Mapped[int] = mapped_column(
         Integer,
-        nullable=False,
-    )
-
-    preferred_learning_mode: Mapped[LearningMode] = mapped_column(
-        Enum(
-            LearningMode,
-            name="learning_mode",
-            values_callable=lambda enum: [
-                item.value for item in enum
-            ],
-        ),
-        default=LearningMode.BALANCED,
-        nullable=False,
-    )
-
-    explanation_depth: Mapped[ExplanationDepth] = mapped_column(
-        Enum(
-            ExplanationDepth,
-            name="explanation_depth",
-            values_callable=lambda enum: [
-                item.value for item in enum
-            ],
-        ),
-        default=ExplanationDepth.MEDIUM,
         nullable=False,
     )
 

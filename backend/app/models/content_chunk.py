@@ -34,7 +34,9 @@ class ContentChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_label: Mapped[str] = mapped_column(String(255), nullable=False)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(Vector(384), nullable=False)
+    # Nullable tạm thời: chunk cũ (embedding cũ 384-chiều) cần rebuild-index lại để có
+    # embedding 768-chiều mới; chunk mới luôn được gán giá trị ngay khi tạo.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
