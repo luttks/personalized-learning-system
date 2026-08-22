@@ -9,12 +9,15 @@ Chiến lược API:
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
 import re
 import urllib.parse
 import urllib.request
+import zipfile
+from xml.etree import ElementTree
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from typing import Any
@@ -281,14 +284,43 @@ def read_text_document(file_bytes: bytes, suffix: str) -> str:
     """Đọc tệp văn bản đơn giản (.txt, .html, .docx)."""
     if suffix in (".txt", ".html", ".htm"):
         return file_bytes.decode("utf-8", errors="ignore")
-    if suffix in (".docx", ".doc"):
+    if suffix == ".doc":
+        raise ValueError("Định dạng .doc cũ không được hỗ trợ; hãy lưu tệp dưới dạng .docx.")
+    if suffix == ".docx":
+        # DOCX là ZIP chứa XML; đọc trực tiếp để không phụ thuộc python-docx.
         try:
-            import docx  # type: ignore[import]
-            import io
-            doc = docx.Document(io.BytesIO(file_bytes))
-            return "\n".join(p.text for p in doc.paragraphs)
-        except Exception:
-            return "Vui lòng cài đặt python-docx để đọc tệp .docx."
+            with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+                root = ElementTree.fromstring(archive.read("word/document.xml"))
+        except (KeyError, ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+            logger.warning("Không đọc được DOCX: %s", exc)
+            return ""
+
+        def local_name(tag: str) -> str:
+            return tag.rsplit("}", 1)[-1]
+
+        def text_in(node: ElementTree.Element) -> str:
+            parts: list[str] = []
+            for child in node.iter():
+                name = local_name(child.tag)
+                if name == "t":
+                    parts.append(child.text or "")
+                elif name in {"tab", "br", "cr"}:
+                    parts.append("\t" if name == "tab" else "\n")
+            return "".join(parts).strip()
+
+        lines: list[str] = []
+        for node in root.iter():
+            name = local_name(node.tag)
+            if name == "p":
+                value = text_in(node)
+                if value:
+                    lines.append(value)
+            elif name == "tr":
+                cells = [text_in(cell) for cell in node if local_name(cell.tag) == "tc"]
+                cells = [cell for cell in cells if cell]
+                if cells:
+                    lines.append("[BẢNG] " + " | ".join(cells))
+        return "\n".join(lines)
     return ""
 
 
