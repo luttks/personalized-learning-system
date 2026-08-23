@@ -629,6 +629,7 @@ export function RoadmapInlinePanel({
   const [applied, setApplied] = useState(false);
   const preview = useDocumentPreview();
   const [previewText, setPreviewText] = useState("");
+  const [highlightedTerms, setHighlightedTerms] = useState<string[]>([]);
 
   const totalDays = roadmap.total_days ?? roadmap.phases.reduce((s, p) => s + p.days.length, 0);
   const previewTopics = roadmap.phases.flatMap((phase) => phase.days.flatMap((day) => day.topics.map((topic) => topic.title))).filter(Boolean);
@@ -811,10 +812,10 @@ export function RoadmapInlinePanel({
                             <div className="space-y-1.5">
                               {day.topics.map((t, ti) => (
                                 <div key={ti} className="text-sm">
-                                  <p className="font-medium text-slate-800">
+                                  <div className="flex items-start justify-between gap-2"><p className="font-medium text-slate-800">
                                     {t.title} <span className="text-xs text-slate-400 font-normal">({t.minutes} phút)</span>
                                     {t.resource_type && <span className="text-xs ml-1" title={t.resource_type}>{resourceIcon[t.resource_type] ?? ""}</span>}
-                                  </p>
+                                  </p>{analysisId && <button type="button" onClick={() => { setHighlightedTerms([t.title, phase.title, day.note ?? "", t.location_hint ?? ""]); void preview.open(analysisId); }} title="Mở tài liệu và highlight nội dung liên quan" className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"><Lightbulb className="size-3" /> Highlight</button>}</div>
                                   {t.why && <p className="text-xs text-slate-500 mt-0.5">💡 {t.why}</p>}
                                   {t.activities && <p className="text-xs text-slate-500 mt-0.5">📝 {t.activities}</p>}
                                   {t.location_hint && <p className="text-xs text-slate-400 mt-0.5">📍 Vị trí trong tài liệu: {t.location_hint}</p>}
@@ -845,7 +846,7 @@ export function RoadmapInlinePanel({
           loading={preview.loading}
           error={preview.error}
           extractedText={previewText}
-          highlightedTerms={previewTopics}
+          highlightedTerms={highlightedTerms.length ? highlightedTerms : previewTopics}
           onClose={preview.close}
         />
       )}
