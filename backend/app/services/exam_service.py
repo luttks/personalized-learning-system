@@ -756,8 +756,35 @@ Trả về JSON (chỉ JSON):
             result["quiz"] = []
         return result
     except Exception as e:
-        logger.warning(f"Quiz generation failed: {e}")
+        logger.warning("Quiz generation failed, using deterministic fallback: %s", e)
+        return _fallback_diagnostic_quiz(document_text, subject)
+
+
+def _fallback_diagnostic_quiz(document_text: str, subject: str) -> dict[str, Any]:
+    """Tạo quiz cơ bản khi LLM hết quota/mất kết nối, tránh chặn toàn bộ luồng học."""
+    sentences = [
+        sentence.strip(" -•\t")
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", document_text)
+        if len(sentence.strip()) >= 35
+    ][:7]
+    if not sentences:
         return {"quiz": [], "topic_summary": ""}
+    quiz: list[dict[str, Any]] = []
+    for index, sentence in enumerate(sentences, 1):
+        words = sentence.split()
+        answer = " ".join(words[: min(8, len(words))]).strip(" ,.;:")
+        if not answer:
+            continue
+        quiz.append({
+            "id": index,
+            "question": f"Nội dung nào được đề cập trong tài liệu về {subject}?",
+            "options": {"A": answer, "B": "Nội dung không xuất hiện trong tài liệu", "C": "Một nhận định chưa được nêu", "D": "Không có thông tin"},
+            "correct": "A",
+            "explanation": f"Thông tin được trích từ tài liệu: {sentence[:300]}",
+            "difficulty": "easy" if index <= 3 else "medium",
+            "topic": subject,
+        })
+    return {"quiz": quiz, "topic_summary": f"Câu hỏi dự phòng trích từ nội dung tài liệu môn {subject}."}
 
 
 # ---------------------------------------------------------------------------
