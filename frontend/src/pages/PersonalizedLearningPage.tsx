@@ -537,7 +537,6 @@ function DocumentPreviewModal({
   loading,
   error,
   extractedText,
-  highlightedTerms = [],
   onClose,
 }: {
   filename: string;
@@ -545,7 +544,6 @@ function DocumentPreviewModal({
   loading: boolean;
   error: string;
   extractedText?: string;
-  highlightedTerms?: string[];
   onClose: () => void;
 }) {
   return (
@@ -576,29 +574,6 @@ function DocumentPreviewModal({
             const ext = filename.split(".").pop()?.toLowerCase() ?? "";
             if (["jpg", "jpeg", "png", "webp"].includes(ext)) {
               return <img src={url} alt={filename} className="max-w-full max-h-full object-contain" />;
-            }
-            if ((ext === "pdf" || ext === "docx") && extractedText && highlightedTerms.length > 0) {
-              const lines = extractedText.split("\n");
-              const phrases = highlightedTerms
-                .filter((term) => term.trim().length > 3)
-                .map((term) => term.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim())
-                .filter(Boolean);
-              const words = Array.from(new Set(phrases.flatMap((phrase) => phrase.split(" ").filter((word) => word.length > 4))));
-              const scores = lines.map((line) => {
-                const normalized = line.toLowerCase();
-                return phrases.reduce((score, phrase) => score + (normalized.includes(phrase) ? 5 : 0), 0)
-                  + words.reduce((score, word) => score + (normalized.includes(word) ? 1 : 0), 0);
-              });
-              const start = scores.reduce((best, score, index) => score > scores[best] ? index : best, 0);
-              const hasMatch = scores[start] > 0;
-              const nextHeading = /^(\s*(?:chương|bài)\s+\d+|\s*\d+\.\s+)/i;
-              const end = hasMatch ? lines.findIndex((line, index) => index > start && nextHeading.test(line.trim())) : -1;
-              const highlightStart = hasMatch ? start : -1;
-              const highlightEnd = hasMatch ? (end === -1 ? Math.min(lines.length, start + 80) : end) : -1;
-              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700"><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Đang highlight mục liên quan: {highlightedTerms.filter(Boolean).join(" · ")}</div>{lines.map((line, index) => {
-                const highlighted = index >= highlightStart && index < highlightEnd;
-                return <p key={`${index}-${line.slice(0, 12)}`} className={highlighted ? "my-1 rounded bg-amber-100 px-2 py-1 font-medium ring-1 ring-amber-300" : "my-1"}>{line || " "}</p>;
-              })}</div>;
             }
             if (ext === "pdf") {
               return <iframe src={url} title={filename} className="w-full h-full border-0" />;
@@ -648,10 +623,8 @@ export function RoadmapInlinePanel({
   const [applied, setApplied] = useState(false);
   const preview = useDocumentPreview();
   const [previewText, setPreviewText] = useState("");
-  const [highlightedTerms, setHighlightedTerms] = useState<string[]>([]);
 
   const totalDays = roadmap.total_days ?? roadmap.phases.reduce((s, p) => s + p.days.length, 0);
-  const previewTopics = roadmap.phases.flatMap((phase) => phase.days.flatMap((day) => day.topics.map((topic) => topic.title))).filter(Boolean);
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleDateString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit" });
 
@@ -834,7 +807,7 @@ export function RoadmapInlinePanel({
                                   <div className="flex items-start justify-between gap-2"><p className="font-medium text-slate-800">
                                     {t.title} <span className="text-xs text-slate-400 font-normal">({t.minutes} phút)</span>
                                     {t.resource_type && <span className="text-xs ml-1" title={t.resource_type}>{resourceIcon[t.resource_type] ?? ""}</span>}
-                                  </p>{analysisId && <button type="button" onClick={() => { setHighlightedTerms([t.title, phase.title, day.note ?? "", t.location_hint ?? ""]); void preview.open(analysisId); }} title="Mở tài liệu và highlight nội dung liên quan" className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"><Lightbulb className="size-3" /> Highlight</button>}</div>
+                                  </p>{analysisId && <button type="button" onClick={() => void preview.open(analysisId)} title="Xem tài liệu gốc" className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-slate-100 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-indigo-50 hover:text-indigo-700"><Eye className="size-3" /> Xem tài liệu</button>}</div>
                                   {t.why && <p className="text-xs text-slate-500 mt-0.5">💡 {t.why}</p>}
                                   {t.activities && <p className="text-xs text-slate-500 mt-0.5">📝 {t.activities}</p>}
                                   {t.location_hint && <p className="text-xs text-slate-400 mt-0.5">📍 Vị trí trong tài liệu: {t.location_hint}</p>}
@@ -865,7 +838,6 @@ export function RoadmapInlinePanel({
           loading={preview.loading}
           error={preview.error}
           extractedText={previewText}
-          highlightedTerms={highlightedTerms.length ? highlightedTerms : previewTopics}
           onClose={preview.close}
         />
       )}
