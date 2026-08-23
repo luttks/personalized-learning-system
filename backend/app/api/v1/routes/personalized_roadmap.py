@@ -2,7 +2,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,12 @@ class PersonalizedRoadmapResponse(BaseModel):
     roadmap_data: dict[str, Any]
     created_at: str
     source_version_id: UUID | None = None
+
+
+class SubjectDocumentChatRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=255)
+    question: str = Field(min_length=2, max_length=3000)
+    session_id: UUID | None = None
 
     @classmethod
     def from_orm(cls, roadmap: PersonalizedRoadmap, source_version_id: UUID | None = None) -> "PersonalizedRoadmapResponse":
@@ -118,6 +124,37 @@ async def chat_with_roadmap_document(
         raise HTTPException(status_code=409, detail="Chưa tìm thấy tài liệu nguồn đã lập chỉ mục cho lộ trình này.")
     try:
         chat, messages = await chat_about_document(session, current_user, source_version_id, payload.question.strip(), payload.session_id)
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Không thể trả lời từ tài liệu nguồn.") from error
+    return DocumentChatSessionResponse(
+        id=chat.id,
+        course_version_id=chat.course_version_id,
+        title=chat.title,
+        messages=[DocumentChatMessageResponse(id=item.id, role=item.role, content=item.content, citations=item.citations or [], sequence=item.sequence, created_at=item.created_at) for item in messages],
+    )
+
+
+@router.post("/chat-by-subject", response_model=DocumentChatSessionResponse)
+async def chat_by_subject(
+    payload: SubjectDocumentChatRequest,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_student),
+) -> DocumentChatSessionResponse:
+    version_id = await session.scalar(
+        select(CourseVersion.id)
+        .join(Course, Course.id == CourseVersion.course_id)
+        .join(DocumentAnalysis, DocumentAnalysis.course_version_id == CourseVersion.id)
+        .where(
+            Course.owner_id == current_user.id,
+            func.lower(Course.subject) == payload.subject.strip().lower(),
+            DocumentAnalysis.status == "completed",
+        )
+        .order_by(CourseVersion.created_at.desc())
+    )
+    if not version_id:
+        raise HTTPException(status_code=409, detail="Chưa có tài liệu nguồn cho môn học này.")
+    try:
+        chat, messages = await chat_about_document(session, current_user, version_id, payload.question.strip(), payload.session_id)
     except Exception as error:
         raise HTTPException(status_code=503, detail="Không thể trả lời từ tài liệu nguồn.") from error
     return DocumentChatSessionResponse(

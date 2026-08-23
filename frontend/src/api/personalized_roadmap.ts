@@ -29,3 +29,7 @@ export async function deletePersonalizedRoadmap(id: string): Promise<void> {
 export async function chatWithRoadmap(roadmapId: string, question: string, sessionId?: string): Promise<DocumentChatSession> {
   return (await apiClient.post<DocumentChatSession>(`/learners/me/roadmaps/${roadmapId}/chat`, { question, session_id: sessionId ?? null }, { timeout: 120_000 })).data;
 }
+
+export async function chatBySubject(subject: string, question: string, sessionId?: string): Promise<DocumentChatSession> {
+  return (await apiClient.post<DocumentChatSession>("/learners/me/roadmaps/chat-by-subject", { subject, question, session_id: sessionId ?? null }, { timeout: 120_000 })).data;
+}

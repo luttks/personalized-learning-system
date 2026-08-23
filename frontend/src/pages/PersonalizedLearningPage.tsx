@@ -16,6 +16,7 @@ import {
   Lightbulb,
   Loader2,
   Mail,
+  MessageCircle,
   Plus,
   PlaySquare,
   ShieldAlert,
@@ -27,8 +28,9 @@ import {
   X,
   Zap,
   History,
+  Send,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import Markdown from "react-markdown";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -58,6 +60,7 @@ import {
   type ParseExamResponse,
   type SubjectSummary,
 } from "../api/exam";
+import { chatBySubject } from "../api/personalized_roadmap";
 import { getStudentProfile } from "../api/student";
 import { Button } from "../components/ui";
 
@@ -529,12 +532,14 @@ function DocumentPreviewModal({
   url,
   loading,
   error,
+  extractedText,
   onClose,
 }: {
   filename: string;
   url: string | null;
   loading: boolean;
   error: string;
+  extractedText?: string;
   onClose: () => void;
 }) {
   return (
@@ -568,6 +573,9 @@ function DocumentPreviewModal({
             }
             if (ext === "pdf") {
               return <iframe src={url} title={filename} className="w-full h-full border-0" />;
+            }
+            if (ext === "docx" && extractedText) {
+              return <pre className="h-full w-full overflow-auto whitespace-pre-wrap bg-white p-6 text-left text-sm leading-7 text-slate-700">{extractedText}</pre>;
             }
             return (
               <div className="flex flex-col items-center gap-3 text-sm text-slate-500 px-6 text-center">
@@ -1307,6 +1315,7 @@ function SubjectDetailScreen({
 
   const preview = useDocumentPreview();
   const [previewFilename, setPreviewFilename] = useState("");
+  const [previewText, setPreviewText] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -1331,6 +1340,8 @@ function SubjectDetailScreen({
 
   function handlePreview(a: ExamAnalysisSummary) {
     setPreviewFilename(a.filename);
+    setPreviewText("");
+    void getExamAnalysis(a.id).then((detail) => setPreviewText(detail.raw_markdown ?? ""));
     void preview.open(a.id);
   }
 
@@ -1396,6 +1407,7 @@ function SubjectDetailScreen({
           url={preview.url}
           loading={preview.loading}
           error={preview.error}
+          extractedText={previewText}
           onClose={preview.close}
         />
       )}
@@ -2323,8 +2335,38 @@ function OnboardingFlow() {
 
       {/* Step 4: Result */}
       {screen === "result" && finalResult && <ResultPanel result={finalResult} />}
+      {analysis?.subject && <RoadmapChatbot subject={analysis.subject} />}
     </div>
   );
+}
+
+function RoadmapChatbot({ subject }: { subject: string }) {
+  const [open, setOpen] = useState(false);
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<import("../types/course").DocumentChatMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    if (!question.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await chatBySubject(subject, question.trim(), sessionId);
+      setSessionId(result.id);
+      setMessages((current) => [...current, ...result.messages]);
+      setQuestion("");
+      setOpen(true);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Chưa có tài liệu RAG cho môn học này."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <div className="fixed bottom-6 right-6 z-40"><button type="button" onClick={() => setOpen((value) => !value)} className="grid size-14 place-items-center rounded-full bg-emerald-600 text-white shadow-xl shadow-emerald-900/20 transition hover:bg-emerald-700" aria-label="Hỏi chatbot về tài liệu"><MessageCircle className="size-6" /></button>{open && <div className="absolute bottom-16 right-0 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-2xl"><h3 className="font-bold text-slate-900">Hỏi tài liệu {subject}</h3><div className="mt-3 max-h-64 space-y-2 overflow-y-auto">{messages.map((message) => <div key={message.id} className={`rounded-lg p-2 text-sm ${message.role === "user" ? "bg-emerald-50" : "bg-slate-100"}`}>{message.content}</div>)}</div>{error && <p className="mt-2 text-xs text-red-600">{error}</p>}<form className="mt-3 flex gap-2" onSubmit={ask}><input className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Đặt câu hỏi..." /><button className="grid size-10 place-items-center rounded-lg bg-emerald-600 text-white disabled:opacity-50" disabled={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></button></form></div>}</div>;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
