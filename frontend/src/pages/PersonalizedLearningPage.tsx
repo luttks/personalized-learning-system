@@ -76,6 +76,7 @@ const FIXED_GOAL_OPTIONS = [
 // trang khác rồi quay lại, các thao tác đã điền không bị mất. File gốc (đối tượng File) không
 // thể serialize được nên không lưu; nếu cần, người dùng phải chọn lại file khi quay lại.
 const ONBOARDING_DRAFT_KEY = "onboarding_draft_v1";
+const LAST_DOCUMENT_SUBJECT_KEY = "pls_last_document_subject";
 
 interface OnboardingDraft {
   screen?: OnboardingScreen;
@@ -1460,6 +1461,9 @@ function OnboardingFlow() {
   const previouslyAttachedFileNames = draftOnMount.fileNames ?? [];
 
   const [analysis, setAnalysis] = useState<DocumentAnalysisResult | null>(draftOnMount.analysis ?? null);
+  const [chatSubject, setChatSubject] = useState<string>(() => {
+    try { return localStorage.getItem(LAST_DOCUMENT_SUBJECT_KEY) ?? ""; } catch { return ""; }
+  });
   const [selectedGoal, setSelectedGoal] = useState<string>(draftOnMount.selectedGoal ?? "");
   const [customGoal, setCustomGoal] = useState<string>(draftOnMount.customGoal ?? "");
   const [quiz, setQuiz] = useState<QuizQuestion[]>(draftOnMount.quiz ?? []);
@@ -1579,6 +1583,8 @@ function OnboardingFlow() {
         return;
       }
       setAnalysis(result);
+      setChatSubject(result.subject);
+      try { localStorage.setItem(LAST_DOCUMENT_SUBJECT_KEY, result.subject); } catch { /* ignore */ }
       setTempFileId(result.temp_file_id);
       setNeedsFileReattach(false);
       setCurriculumTopic(null);
@@ -2344,7 +2350,7 @@ function OnboardingFlow() {
 
       {/* Step 4: Result */}
       {screen === "result" && finalResult && <ResultPanel result={finalResult} />}
-      {analysis?.subject && <RoadmapChatbot subject={analysis.subject} />}
+      <RoadmapChatbot subject={analysis?.subject || chatSubject} />
     </div>
   );
 }
@@ -2359,7 +2365,7 @@ function RoadmapChatbot({ subject }: { subject: string }) {
 
   async function ask(event: FormEvent) {
     event.preventDefault();
-    if (!question.trim()) return;
+    if (!question.trim() || !subject) return;
     setLoading(true);
     setError("");
     try {
@@ -2375,7 +2381,7 @@ function RoadmapChatbot({ subject }: { subject: string }) {
     }
   }
 
-  return <div className="fixed bottom-6 right-6 z-40"><button type="button" onClick={() => setOpen((value) => !value)} className="grid size-14 place-items-center rounded-full bg-emerald-600 text-white shadow-xl shadow-emerald-900/20 transition hover:bg-emerald-700" aria-label="Hỏi chatbot về tài liệu"><MessageCircle className="size-6" /></button>{open && <div className="absolute bottom-16 right-0 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-2xl"><h3 className="font-bold text-slate-900">Hỏi tài liệu {subject}</h3><div className="mt-3 max-h-64 space-y-2 overflow-y-auto">{messages.map((message) => <div key={message.id} className={`rounded-lg p-2 text-sm ${message.role === "user" ? "bg-emerald-50" : "bg-slate-100"}`}>{message.content}</div>)}</div>{error && <p className="mt-2 text-xs text-red-600">{error}</p>}<form className="mt-3 flex gap-2" onSubmit={ask}><input className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Đặt câu hỏi..." /><button className="grid size-10 place-items-center rounded-lg bg-emerald-600 text-white disabled:opacity-50" disabled={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></button></form></div>}</div>;
+  return <div className="fixed bottom-6 right-6 z-40"><button type="button" onClick={() => setOpen((value) => !value)} className="grid size-14 place-items-center rounded-full bg-emerald-600 text-white shadow-xl shadow-emerald-900/20 transition hover:bg-emerald-700" aria-label="Hỏi chatbot về tài liệu"><MessageCircle className="size-6" /></button>{open && <div className="absolute bottom-16 right-0 w-[min(24rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-2xl"><h3 className="font-bold text-slate-900">{subject ? `Hỏi tài liệu ${subject}` : "Hỏi tài liệu"}</h3>{!subject ? <p className="mt-3 text-sm text-slate-600">Hãy phân tích một tài liệu học tập trước khi đặt câu hỏi.</p> : <><div className="mt-3 max-h-64 space-y-2 overflow-y-auto">{messages.map((message) => <div key={message.id} className={`rounded-lg p-2 text-sm ${message.role === "user" ? "bg-emerald-50" : "bg-slate-100"}`}>{message.content}</div>)}</div>{error && <p className="mt-2 text-xs text-red-600">{error}</p>}<form className="mt-3 flex gap-2" onSubmit={ask}><input className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Đặt câu hỏi..." /><button className="grid size-10 place-items-center rounded-lg bg-emerald-600 text-white disabled:opacity-50" disabled={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></button></form></>}</div>}</div>;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
