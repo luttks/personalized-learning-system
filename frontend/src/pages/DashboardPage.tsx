@@ -4,6 +4,9 @@ import {
   Clock3,
   LogOut,
   Users,
+  FileText,
+  ClipboardCheck,
+  Map,
 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
@@ -11,10 +14,18 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../auth/useAuth";
 import { Button, PageHeader } from "../components/ui";
 import { roleLabels } from "../types/user";
+import { getDashboardStats, type DashboardStats } from "../api/dashboard";
+import { useEffect } from "react";
 
 export function DashboardPage() {
   const { user, signOut } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [statsError, setStatsError] = useState("");
+
+  useEffect(() => {
+    void getDashboardStats().then(setStats).catch(() => setStatsError("Không thể tải thống kê hoạt động."));
+  }, []);
 
   if (!user) return null;
 
@@ -83,6 +94,22 @@ export function DashboardPage() {
           </Button>
         </div>
       </section>
+
+      <section>
+        <div className="flex items-end justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-900">Thống kê học tập</h2><p className="mt-1 text-sm text-slate-500">Tổng hợp tài liệu, bài kiểm tra và lịch học của bạn.</p></div>{statsError && <p className="text-xs text-red-600">{statsError}</p>}</div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+          <StatCard icon={FileText} label="Tài liệu khóa học" value={stats?.course_document_count ?? "—"} tone="emerald" />
+          <StatCard icon={ClipboardCheck} label="Bài kiểm tra đã upload" value={stats?.exam_upload_count ?? "—"} tone="blue" />
+          <StatCard icon={Map} label="Lộ trình đã tạo" value={stats?.roadmap_count ?? "—"} tone="indigo" />
+          <StatCard icon={Clock3} label="Học mỗi ngày" value={stats?.study_minutes_per_day != null ? `${stats.study_minutes_per_day} phút` : "—"} tone="amber" />
+          <StatCard icon={BookOpenCheck} label="Ngày học mỗi tuần" value={stats?.study_days_per_week != null ? `${stats.study_days_per_week} ngày` : "—"} tone="violet" />
+        </div>
+      </section>
     </div>
   );
+}
+
+function StatCard({ icon: Icon, label, value, tone }: { icon: typeof FileText; label: string; value: string | number; tone: string }) {
+  const colors: Record<string, string> = { emerald: "bg-emerald-50 text-emerald-700", blue: "bg-blue-50 text-blue-700", indigo: "bg-indigo-50 text-indigo-700", amber: "bg-amber-50 text-amber-700", violet: "bg-violet-50 text-violet-700" };
+  return <div className="rounded-lg border border-slate-200 bg-white p-4"><div className={`grid size-9 place-items-center rounded-lg ${colors[tone] ?? colors.emerald}`}><Icon className="size-5" /></div><p className="mt-4 text-xs font-medium text-slate-500">{label}</p><p className="mt-1 text-2xl font-bold text-slate-900">{value}</p></div>;
 }

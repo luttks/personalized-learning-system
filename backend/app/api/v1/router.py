@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api import health
+from app.api import dashboard
 from app.api.v1 import auth
 from app.api.v1.routes import (
     catalog,
@@ -15,6 +16,8 @@ from app.api.v1.routes import (
 )
 
 api_router = APIRouter()
+
+api_router.include_router(dashboard.router)
 
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
