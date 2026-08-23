@@ -250,6 +250,9 @@ async def save_document_edit(
     )
     await session.commit()
     await session.refresh(analysis)
+    from app.services.rag_service import rebuild_content_index_for_analysis
+
+    await rebuild_content_index_for_analysis(session, analysis)
     return document, version, analysis
 
 

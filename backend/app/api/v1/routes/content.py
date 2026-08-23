@@ -23,6 +23,10 @@ from app.schemas.content import (
     DocumentEditRequest,
     DocumentJobResponse,
     DocumentPreviewResponse,
+    DocumentReaderResponse,
+    DocumentChatRequest,
+    DocumentChatSessionResponse,
+    DocumentChatMessageResponse,
     DocumentResponse,
     DocumentStructure,
     DocumentUploadResponse,
@@ -72,6 +76,7 @@ from app.services.rag_service import (
     search_content_chunks,
 )
 from app.worker.tasks import verify_document_upload_task
+from app.services.document_chat_service import chat_about_document, get_document_chat
 
 router = APIRouter(prefix="/courses", tags=["Courses and Documents"])
 job_router = APIRouter(prefix="/document-jobs", tags=["Courses and Documents"])
@@ -450,6 +455,81 @@ def _analysis_response(analysis: Any) -> DocumentAnalysisResponse:
         created_at=analysis.created_at,
         updated_at=analysis.updated_at,
     )
+
+
+def _chat_response(chat: Any, messages: list[Any]) -> DocumentChatSessionResponse:
+    return DocumentChatSessionResponse(
+        id=chat.id,
+        course_version_id=chat.course_version_id,
+        title=chat.title,
+        messages=[
+            DocumentChatMessageResponse(
+                id=item.id,
+                role=item.role,
+                content=item.content,
+                citations=item.citations or [],
+                sequence=item.sequence,
+                created_at=item.created_at,
+            )
+            for item in messages
+        ],
+    )
+
+
+@router.get("/versions/{course_version_id}/reader", response_model=DocumentReaderResponse)
+async def read_document(
+    course_version_id: UUID,
+    current_user: CurrentContentManager,
+    session: DatabaseSession,
+) -> DocumentReaderResponse:
+    try:
+        document, _version, analysis = await get_document_preview(session, current_user, course_version_id)
+        count = await content_index_count(session, current_user, course_version_id)
+    except CourseNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    if analysis is None or analysis.status != "completed":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Tài liệu chưa phân tích xong.")
+    structure = DocumentStructure.model_validate(analysis.edited_structure_json or analysis.structure_json)
+    return DocumentReaderResponse(
+        course_version_id=course_version_id,
+        title=structure.title or document.original_name,
+        summary=structure.summary,
+        effective_text=analysis.edited_text or analysis.extracted_text,
+        structure=structure,
+        rag_chunk_count=count,
+    )
+
+
+@router.post("/versions/{course_version_id}/chat", response_model=DocumentChatSessionResponse)
+async def chat_document(
+    course_version_id: UUID,
+    payload: DocumentChatRequest,
+    current_user: CurrentContentManager,
+    session: DatabaseSession,
+) -> DocumentChatSessionResponse:
+    try:
+        chat, messages = await chat_about_document(
+            session, current_user, course_version_id, payload.question.strip(), payload.session_id
+        )
+    except CourseNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Dịch vụ AI hiện không khả dụng.") from error
+    return _chat_response(chat, messages)
+
+
+@router.get("/versions/{course_version_id}/chat/{chat_id}", response_model=DocumentChatSessionResponse)
+async def get_chat_document(
+    course_version_id: UUID,
+    chat_id: UUID,
+    current_user: CurrentContentManager,
+    session: DatabaseSession,
+) -> DocumentChatSessionResponse:
+    try:
+        chat, messages = await get_document_chat(session, current_user, course_version_id, chat_id)
+    except CourseNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND) from error
+    return _chat_response(chat, messages)
 
 
 @router.get(

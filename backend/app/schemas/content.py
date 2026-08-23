@@ -170,6 +170,36 @@ class RagSearchResponse(BaseModel):
     results: list[RagSearchResult]
 
 
+class DocumentReaderResponse(BaseModel):
+    course_version_id: UUID
+    title: str
+    summary: str
+    effective_text: str
+    structure: DocumentStructure | None
+    rag_chunk_count: int
+
+
+class DocumentChatMessageResponse(BaseModel):
+    id: UUID
+    role: str
+    content: str
+    citations: list[dict]
+    sequence: int
+    created_at: datetime
+
+
+class DocumentChatSessionResponse(BaseModel):
+    id: UUID
+    course_version_id: UUID
+    title: str
+    messages: list[DocumentChatMessageResponse]
+
+
+class DocumentChatRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=3000)
+    session_id: UUID | None = None
+
+
 class CatalogConceptResponse(BaseModel):
     id: UUID
     stable_key: str

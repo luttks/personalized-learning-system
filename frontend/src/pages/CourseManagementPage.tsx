@@ -6,6 +6,7 @@ import {
   FileText,
   Eye,
   ListTree,
+  MessageCircle,
   Pencil,
   Save,
   Search,
@@ -39,6 +40,8 @@ import {
   saveDocumentAnalysis,
   saveCourseCatalog,
   searchRagIndex,
+  getDocumentReader,
+  chatWithDocument,
   unpublishCourse,
   uploadCourseDocument,
 } from "../api/courses";
@@ -334,9 +337,52 @@ export function CourseManagementPage() {
               onChange={setAnalysis}
             />
           )}
+          {analysis?.status === "completed" && <DocumentReaderChat versionId={analysis.course_version_id} />}
         </div>
       </section>
     </div>
+  );
+}
+
+function DocumentReaderChat({ versionId }: { versionId: string }) {
+  const [reader, setReader] = useState<import("../types/course").DocumentReader | null>(null);
+  const [chat, setChat] = useState<import("../types/course").DocumentChatSession | null>(null);
+  const [question, setQuestion] = useState("");
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void getDocumentReader(versionId).then(setReader).catch((requestError) => setError(getApiErrorMessage(requestError, "Không thể tải nội dung tài liệu.")));
+  }, [versionId]);
+
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    const value = question.trim();
+    if (!value) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await chatWithDocument(versionId, value, chat?.id);
+      setChat((current) => current ? { ...current, messages: [...current.messages, ...result.messages] } : result);
+      setQuestion("");
+      setOpen(true);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể trả lời câu hỏi từ tài liệu."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div><h2 className="flex items-center gap-2 font-bold text-slate-900"><BookOpen className="size-5 text-emerald-700" /> Đọc tài liệu</h2><p className="mt-1 text-xs text-slate-500">{reader ? `${reader.rag_chunk_count} đoạn đã lập chỉ mục RAG` : "Đang tải nội dung..."}</p></div>
+        <Button type="button" variant="secondary" onClick={() => setOpen((value) => !value)}><MessageCircle className="size-4" /> {open ? "Đóng chatbot" : "Hỏi tài liệu"}</Button>
+      </div>
+      {reader && <div className="mt-5 grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]"><aside className="rounded-lg bg-slate-50 p-4"><h3 className="font-semibold text-slate-900">Mục lục</h3><div className="mt-3 space-y-2">{reader.structure?.chapters.map((chapter) => <a key={chapter.number} href={`#reader-chapter-${chapter.number}`} className="block text-sm text-slate-600 hover:text-emerald-700">{chapter.number}. {chapter.title}</a>)}</div></aside><article className="min-w-0"><h3 className="text-xl font-bold text-slate-900">{reader.title}</h3><p className="mt-2 text-sm text-slate-600">{reader.summary}</p>{reader.structure?.chapters.map((chapter) => <section id={`reader-chapter-${chapter.number}`} key={chapter.number} className="mt-6 scroll-mt-20"><h4 className="text-lg font-semibold text-slate-900">{chapter.number}. {chapter.title}</h4><p className="mt-1 text-sm text-slate-600">{chapter.summary}</p>{chapter.key_points.length > 0 && <ul className="mt-2 list-disc pl-5 text-sm text-slate-700">{chapter.key_points.map((point) => <li key={point}>{point}</li>)}</ul>}</section>)}<details className="mt-6"><summary className="cursor-pointer text-sm font-semibold text-emerald-700">Xem toàn bộ nội dung trích xuất</summary><pre className="mt-3 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-50 p-4 text-sm text-slate-700">{reader.effective_text}</pre></details></article></div>}
+      {open && <div className="mt-5 border-t border-slate-200 pt-5"><div className="max-h-80 space-y-3 overflow-auto">{chat?.messages.map((message) => <div key={message.id} className={`rounded-lg p-3 text-sm ${message.role === "user" ? "ml-8 bg-emerald-50 text-emerald-950" : "mr-8 bg-slate-100 text-slate-800"}`}><p className="whitespace-pre-wrap">{message.content}</p>{message.citations.length > 0 && <p className="mt-2 text-xs text-slate-500">Nguồn: {message.citations.map((citation) => citation.source_label).join(", ")}</p>}</div>)}</div>{error && <Notice>{error}</Notice>}<form className="mt-3 flex gap-2" onSubmit={ask}><Input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Hỏi nội dung trong tài liệu..." maxLength={3000} /><Button type="submit" isLoading={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></Button></form></div>}
+    </section>
   );
 }
 

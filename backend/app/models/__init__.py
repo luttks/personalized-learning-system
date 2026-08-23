@@ -18,6 +18,7 @@ from app.models.course_learning_path import CourseLearningPath
 from app.models.course_publication import CoursePublication
 from app.models.diagnostic import DiagnosticAssessment, DiagnosticAttempt
 from app.models.document_analysis import DocumentAnalysis
+from app.models.document_chat import DocumentChatMessage, DocumentChatSession
 from app.models.exam_analysis_model import ExamAnalysis
 from app.models.learner import (
     LearnerEvidence,
@@ -50,6 +51,8 @@ __all__ = [
     "DiagnosticAttempt",
     "Document",
     "DocumentAnalysis",
+    "DocumentChatMessage",
+    "DocumentChatSession",
     "ExamAnalysis",
     "DocumentJob",
     "DocumentJobStatus",

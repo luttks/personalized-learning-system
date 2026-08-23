@@ -138,6 +138,31 @@ export interface RagSearchResponse {
   results: RagSearchResult[];
 }
 
+export interface DocumentReader {
+  course_version_id: string;
+  title: string;
+  summary: string;
+  effective_text: string;
+  structure: DocumentStructure | null;
+  rag_chunk_count: number;
+}
+
+export interface DocumentChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Array<{ chunk_id: string; source_label: string; page_number: number | null }>;
+  sequence: number;
+  created_at: string;
+}
+
+export interface DocumentChatSession {
+  id: string;
+  course_version_id: string;
+  title: string;
+  messages: DocumentChatMessage[];
+}
+
 export interface CatalogConcept {
   id: string;
   stable_key: string;

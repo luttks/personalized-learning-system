@@ -13,6 +13,8 @@ import type {
   DocumentUploadResponse,
   RagIndex,
   RagSearchResponse,
+  DocumentReader,
+  DocumentChatSession,
 } from "../types/course";
 
 export async function createCourse(payload: CourseCreatePayload): Promise<Course> {
@@ -120,6 +122,18 @@ export async function searchRagIndex(
       limit,
     })
   ).data;
+}
+
+export async function getDocumentReader(versionId: string): Promise<DocumentReader> {
+  return (await apiClient.get<DocumentReader>(`/courses/versions/${versionId}/reader`)).data;
+}
+
+export async function chatWithDocument(versionId: string, question: string, sessionId?: string): Promise<DocumentChatSession> {
+  return (await apiClient.post<DocumentChatSession>(`/courses/versions/${versionId}/chat`, { question, session_id: sessionId ?? null }, { timeout: 120_000 })).data;
+}
+
+export async function getDocumentChat(versionId: string, chatId: string): Promise<DocumentChatSession> {
+  return (await apiClient.get<DocumentChatSession>(`/courses/versions/${versionId}/chat/${chatId}`)).data;
 }
 
 export async function getCourseCatalog(versionId: string): Promise<CourseCatalog> {

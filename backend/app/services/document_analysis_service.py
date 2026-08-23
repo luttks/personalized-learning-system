@@ -26,6 +26,7 @@ from app.services.document_extractor import (
     fallback_structure,
 )
 from app.services.document_storage import LocalDocumentStorage
+from app.services.rag_service import rebuild_content_index_for_analysis
 
 
 async def analyze_document_job(
@@ -108,6 +109,15 @@ async def analyze_document_job(
             provider=provider_name,
             model=model_name,
         )
+        # Build the searchable pgvector index as part of the upload pipeline.
+        async with session_factory() as index_session:
+            indexed_analysis = await index_session.scalar(
+                select(DocumentAnalysis).where(
+                    DocumentAnalysis.course_version_id == snapshot.version.id
+                )
+            )
+            if indexed_analysis is not None:
+                await rebuild_content_index_for_analysis(index_session, indexed_analysis)
         return {"job_id": str(job_id), "status": DocumentJobStatus.COMPLETED.value}
     except DocumentExtractionError as error:
         await _fail_analysis(session_factory, job_id, "EXTRACTION_FAILED", str(error))
