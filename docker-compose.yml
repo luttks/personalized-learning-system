@@ -84,6 +84,27 @@ services:
       worker
       --loglevel=INFO
 
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: learning-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      celery
+      -A app.worker.celery_app:celery_app
+      beat
+      --loglevel=INFO
+
   frontend:
     build:
       context: ./frontend

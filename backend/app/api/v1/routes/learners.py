@@ -23,6 +23,7 @@ from app.schemas.learner import (
     UnderstandInputRequest,
     UnderstandInputResponse,
 )
+from app.services.exam_service import crawl_resources
 from app.services.learner_service import (
     apply_profile_patch,
     ensure_learner_profile,
@@ -39,7 +40,7 @@ from app.services.roadmap_planner import (
     RoadmapCapacityError,
     build_roadmap,
 )
-from app.services.exam_service import crawl_resources
+from app.worker.tasks import send_roadmap_created_email_task
 
 router = APIRouter(prefix="/learners", tags=["Adaptive Learning"])
 
@@ -214,6 +215,8 @@ async def create_my_roadmap(
         ) from error
 
     roadmap, _ = await persist_roadmap(session, profile.id, plan)
+
+    send_roadmap_created_email_task.delay(str(roadmap.id))
 
     # Crawl tài nguyên theo từng topic song song
     import asyncio

@@ -22,10 +22,19 @@ import json
 import logging
 import os
 from datetime import UTC, date, datetime
+from typing import Annotated, Any
 from uuid import UUID
-from typing import Annotated, Any, List
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
@@ -38,19 +47,20 @@ from app.models.content import Course, CourseStatus
 from app.models.exam_analysis_model import ExamAnalysis
 from app.models.personalized_roadmap import PersonalizedRoadmap
 from app.models.user import User
+from app.schemas.learner import LearningEventRequest
 from app.services.exam_service import (
     ALL_SUPPORTED_EXTS,
     analyze_competency_evidence,
     analyze_document_for_learning,
     analyze_multiple_documents,
+    crawl_resources_per_phase,
+    crawl_resources_smart,
+    crawl_solution_for_question,
     generate_diagnostic_quiz,
+    generate_learning_roadmap,
+    generate_solution_hint,
     get_ai_recommendation_groq,
     run_full_exam_pipeline,
-    crawl_resources_smart,
-    generate_learning_roadmap,
-    crawl_resources_per_phase,
-    crawl_solution_for_question,
-    generate_solution_hint,
     save_upload_file,
 )
 from app.services.learner_service import (
@@ -64,7 +74,7 @@ from app.services.temp_upload_service import (
     read_temp_file,
     save_temp_file,
 )
-from app.schemas.learner import LearningEventRequest
+from app.worker.tasks import send_roadmap_created_email_task
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +328,7 @@ async def _check_existing_mastery(session: AsyncSession, learner_id, subject: st
 async def analyze_document(
     current_user: CurrentStudent,
     session: DatabaseSession,
-    files: Annotated[List[UploadFile], File(description="File tài liệu học (PDF/DOCX/TXT/ảnh) — có thể upload nhiều file")],
+    files: Annotated[list[UploadFile], File(description="File tài liệu học (PDF/DOCX/TXT/ảnh) — có thể upload nhiều file")],
 ) -> DocumentAnalysisResponse:
     """
     Bước 1 Luồng 1: Upload tài liệu.
@@ -1178,6 +1188,7 @@ async def submit_exam(
         )
         session.add(roadmap_record)
         await session.commit()
+        send_roadmap_created_email_task.delay(str(roadmap_record.id))
 
     return ExamAnalysisDetail(
         id=str(analysis.id),

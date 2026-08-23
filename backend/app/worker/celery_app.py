@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 
 from app.core.config import settings
 
@@ -19,4 +20,10 @@ celery_app.conf.update(
     task_time_limit=30 * 60,
     task_soft_time_limit=25 * 60,
     worker_prefetch_multiplier=1,
+    beat_schedule={
+        "daily-study-reminders": {
+            "task": "notifications.send_daily_study_reminders",
+            "schedule": crontab(hour=settings.daily_reminder_hour, minute=0),
+        },
+    },
 )

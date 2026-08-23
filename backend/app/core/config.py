@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     youtube_api_key: str | None = None
     github_token: str | None = None
 
+    # SMTP notifications
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = Field(default=465, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_name: str = "Personalized Learning System"
+    app_base_url: str = "http://localhost:5173"
+    daily_reminder_hour: int = Field(default=7, ge=0, le=23)
+
     uploads_dir: str = "uploads"
     document_max_upload_bytes: int = Field(default=150 * 1024 * 1024, gt=0)
     document_upload_chunk_bytes: int = Field(default=1024 * 1024, gt=0)
