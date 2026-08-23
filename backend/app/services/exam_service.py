@@ -106,7 +106,8 @@ def _parse_json_safely(raw: str) -> Any:
     raw = raw.strip()
     # Tìm block ```json ... ```
     import re
-    match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', raw, re.DOTALL)
+    # Dùng greedy match để không dừng ở dấu `}` lồng trong options/explanation.
+    match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', raw, re.DOTALL)
     if match:
         raw = match.group(1)
     else:
@@ -745,7 +746,15 @@ Trả về JSON (chỉ JSON):
         raw = await _call_llm_with_fallback(
             prompt, gemini_api_keys, llm_api_keys, llm_base_url, llm_model, timeout=60.0
         )
-        return _parse_json_safely(raw)
+        result = _parse_json_safely(raw)
+        if isinstance(result, list):
+            result = {"quiz": result, "topic_summary": ""}
+        if not isinstance(result, dict):
+            raise ValueError("AI trả về JSON không đúng cấu trúc quiz.")
+        quiz = result.get("quiz")
+        if not isinstance(quiz, list):
+            result["quiz"] = []
+        return result
     except Exception as e:
         logger.warning(f"Quiz generation failed: {e}")
         return {"quiz": [], "topic_summary": ""}
