@@ -101,12 +101,24 @@ export function DashboardPage() {
           <StatCard icon={FileText} label="Tài liệu khóa học" value={stats?.course_document_count ?? "—"} tone="emerald" />
           <StatCard icon={ClipboardCheck} label="Bài kiểm tra đã upload" value={stats?.exam_upload_count ?? "—"} tone="blue" />
           <StatCard icon={Map} label="Lộ trình đã tạo" value={stats?.roadmap_count ?? "—"} tone="indigo" />
-          <StatCard icon={Clock3} label="Tổng thời gian học" value={stats ? `${stats.total_study_minutes} phút` : "—"} tone="amber" />
+          <StatCard icon={Clock3} label="Tổng thời gian học" value={stats ? formatStudyDuration(stats.total_study_minutes) : "—"} tone="amber" />
           <StatCard icon={BookOpenCheck} label="Thời gian mục tiêu/ngày" value={stats?.study_minutes_per_day != null ? `${stats.study_minutes_per_day} phút` : "—"} tone="violet" />
         </div>
       </section>
     </div>
   );
+}
+
+function formatStudyDuration(totalMinutes: number): string {
+  if (totalMinutes < 60) return `${totalMinutes} phút`;
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  const parts: string[] = [];
+  if (days) parts.push(`${days} ngày`);
+  if (hours) parts.push(`${hours} giờ`);
+  if (minutes) parts.push(`${minutes} phút`);
+  return parts.join(" ");
 }
 
 function StatCard({ icon: Icon, label, value, tone }: { icon: typeof FileText; label: string; value: string | number; tone: string }) {
