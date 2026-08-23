@@ -165,7 +165,13 @@ export function LoginPage() {
           <Field label="Mật khẩu"><PasswordInput value={password} onChange={setPassword} /></Field>
           <Button className="w-full" type="submit" isLoading={loading}>Đăng nhập <ArrowRight className="size-4" /></Button>
         </>}
+        {forgotMode && !resetSent && (
+          <Button className="w-full" type="submit" isLoading={loading}>
+            Gửi mã xác nhận <ArrowRight className="size-4" />
+          </Button>
+        )}
         {forgotMode && resetSent && <>
+          <p className="rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">Mã xác nhận đã được gửi. Vui lòng kiểm tra email của bạn.</p>
           <Field label="Mã xác nhận"><Input value={code} onChange={(event) => setCode(event.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required /></Field>
           <Field label="Mật khẩu mới" hint="Tối thiểu 8 ký tự"><PasswordInput value={newPassword} onChange={setNewPassword} /></Field>
           <Button className="w-full" type="submit" isLoading={loading}>Đổi mật khẩu <ArrowRight className="size-4" /></Button>
