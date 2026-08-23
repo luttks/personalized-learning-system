@@ -33,3 +33,7 @@ export async function chatWithRoadmap(roadmapId: string, question: string, sessi
 export async function chatBySubject(subject: string, question: string, sessionId?: string): Promise<DocumentChatSession> {
   return (await apiClient.post<DocumentChatSession>("/learners/me/roadmaps/chat-by-subject", { subject, question, session_id: sessionId ?? null }, { timeout: 120_000 })).data;
 }
+
+export async function emailRoadmapByAnalysis(analysisId: string): Promise<string> {
+  return (await apiClient.post<{ message: string }>(`/learners/me/roadmaps/by-analysis/${analysisId}/email`)).data.message;
+}

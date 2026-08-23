@@ -18,6 +18,7 @@ from app.schemas.content import DocumentChatRequest, DocumentChatSessionResponse
 from app.services.learner_service import get_learner_profile
 from app.core.config import settings
 from app.services.exam_service import _call_llm_with_fallback
+from app.worker.tasks import send_roadmap_created_email_task
 
 router = APIRouter()
 
@@ -84,6 +85,20 @@ async def get_my_roadmaps(
     roadmaps = result.scalars().all()
     
     return [PersonalizedRoadmapResponse.from_orm(r, await _source_version_id(session, r, current_user)) for r in roadmaps]
+
+
+@router.post("/by-analysis/{analysis_id}/email", response_model=dict[str, str])
+async def email_roadmap_by_analysis(
+    analysis_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_student),
+) -> dict[str, str]:
+    learner = await get_learner_profile(session, current_user.id)
+    roadmap = await session.scalar(select(PersonalizedRoadmap).where(PersonalizedRoadmap.exam_analysis_id == analysis_id, PersonalizedRoadmap.learner_id == learner.id if learner else False))
+    if roadmap is None:
+        raise HTTPException(status_code=404, detail="Chưa tìm thấy lộ trình để gửi email.")
+    send_roadmap_created_email_task.delay(str(roadmap.id))
+    return {"message": "Đã đưa email lộ trình vào hàng đợi gửi."}
 
 
 @router.get("/{roadmap_id}", response_model=PersonalizedRoadmapResponse)

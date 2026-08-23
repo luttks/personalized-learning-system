@@ -63,6 +63,7 @@ import {
   type SubjectSummary,
 } from "../api/exam";
 import { chatBySubject } from "../api/personalized_roadmap";
+import { emailRoadmapByAnalysis } from "../api/personalized_roadmap";
 import { getStudentProfile } from "../api/student";
 import { Button } from "../components/ui";
 
@@ -536,6 +537,7 @@ function DocumentPreviewModal({
   loading,
   error,
   extractedText,
+  highlightedTerms = [],
   onClose,
 }: {
   filename: string;
@@ -543,6 +545,7 @@ function DocumentPreviewModal({
   loading: boolean;
   error: string;
   extractedText?: string;
+  highlightedTerms?: string[];
   onClose: () => void;
 }) {
   return (
@@ -578,7 +581,11 @@ function DocumentPreviewModal({
               return <iframe src={url} title={filename} className="w-full h-full border-0" />;
             }
             if (ext === "docx" && extractedText) {
-              return <pre className="h-full w-full overflow-auto whitespace-pre-wrap bg-white p-6 text-left text-sm leading-7 text-slate-700">{extractedText}</pre>;
+              const terms = highlightedTerms.filter((term) => term.trim().length > 3).map((term) => term.toLowerCase());
+              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700">{extractedText.split("\n").map((line, index) => {
+                const highlighted = terms.some((term) => line.toLowerCase().includes(term));
+                return <p key={`${index}-${line.slice(0, 12)}`} className={highlighted ? "my-1 rounded bg-amber-100 px-2 ring-1 ring-amber-300" : "my-1"}>{line || " "}</p>;
+              })}</div>;
             }
             return (
               <div className="flex flex-col items-center gap-3 text-sm text-slate-500 px-6 text-center">
@@ -624,10 +631,20 @@ export function RoadmapInlinePanel({
   const [previewText, setPreviewText] = useState("");
 
   const totalDays = roadmap.total_days ?? roadmap.phases.reduce((s, p) => s + p.days.length, 0);
+  const previewTopics = roadmap.phases.flatMap((phase) => phase.days.flatMap((day) => day.topics.map((topic) => topic.title))).filter(Boolean);
   const formatDate = (iso: string) =>
     new Date(iso).toLocaleDateString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit" });
 
-  function handleEmail() {
+  async function handleEmail() {
+    if (analysisId) {
+      try {
+        await emailRoadmapByAnalysis(analysisId);
+        window.alert("Đã gửi email lộ trình vào hộp thư của bạn.");
+        return;
+      } catch {
+        // Fall back to opening the user's mail client when the server task is unavailable.
+      }
+    }
     const lines = [
       `LỘ TRÌNH HỌC TẬP: ${subject}`,
       `Mục tiêu: ${goal}`,
@@ -828,6 +845,7 @@ export function RoadmapInlinePanel({
           loading={preview.loading}
           error={preview.error}
           extractedText={previewText}
+          highlightedTerms={previewTopics}
           onClose={preview.close}
         />
       )}
