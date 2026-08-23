@@ -1,0 +1,62 @@
+{
+  "url": "https://loigiaihay.com/sgk-tin-hoc-10-ket-noi-tri-thuc-c897.html",
+  "chapters": [
+    {
+      "chapter_name": "Chủ đề 1. Máy tính và xã hội tri thức",
+      "lessons": [
+        "Bài 1. Thông tin và xử lí thông tin",
+        "Bài 2. Vai trò của thiết bị thông minh và tin học đối với xã hội",
+        "Bài 3. Một số kiểu dữ liệu và dữ liệu văn bản",
+        "Bài 4. Hệ nhị phân và dữ liệu số nguyên",
+        "Bài 5. Dữ liệu logic",
+        "Bài 6. Dữ liệu âm thanh và hình ảnh",
+        "Bài 7. Thực hành sử dụng thiết bị số thông dụng"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 2. Mạng máy tính và internet",
+      "lessons": [
+        "Bài 8. Mạng máy tính trong cuộc sống hiện đại",
+        "Bài 9. An toàn trên không gian mạng",
+        "Bài 10. Thực hành khai thác tài nguyên trên internet"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 3. Đạo đức, pháp luật và văn hóa trong môi trường số",
+      "lessons": [
+        "Bài 11. Ứng xử trên môi trường số. Nghĩa vụ tôn trọng bản quyền",
+        "Bài 12. Phần mềm thiết kế đồ họa"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 4. Ứng dụng Tin học",
+      "lessons": [
+        "Bài 13. Bổ sung các đối tượng đồ họa",
+        "Bài 14. Làm việc với đối tượng đương và văn bản",
+        "Bài 15. Hoàn thiện hình ảnh đồ họa"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 5. Giải quyết vấn đề với sự trợ giúp của máy tính",
+      "lessons": [
+        "Bài 16. Ngôn ngữ lập trình bậc cao và Python",
+        "Bài 17. Biến và lệnh gán",
+        "Bài 18. Các lệnh vào ra đơn giản",
+        "Bài 19. Câu lệnh điều kiện IF",
+        "Bài 20. Câu lệnh lặp FOR",
+        "Bài 21. Câu lệnh lặp WHILE",
+        "Bài 22. Kiểu dữ liệu danh sách",
+        "Bài 23. Một số lệnh làm việc với dữ liệu danh sách",
+        "Bài 24. Xâu kí tự",
+        "Bài 25. Một số lệnh làm việc với xâu kí tự",
+        "Bài 26. Hàm trong Python",
+        "Bài 27. Tham số của hàm",
+        "Bài 28. Phạm vi của biến",
+        "Bài 29. Nhận biết lỗi chương trình",
+        "Bài 30. Kiểm thử và gỡ lỗi chương trình",
+        "Bài 31. Thực hành viết chương trình đơn giản",
+        "Bài 32. Ôn tập lập trình python"
+      ]
+    }
+  ]
+}

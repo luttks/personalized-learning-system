@@ -11,6 +11,7 @@ RUN apt-get update \
     build-essential \
     libpq-dev \
     curl \
+    poppler-utils \
     tesseract-ocr \
     tesseract-ocr-eng \
     tesseract-ocr-vie \

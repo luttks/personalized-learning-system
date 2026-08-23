@@ -1,0 +1,90 @@
+{
+  "url": "https://loigiaihay.com/sgk-tin-hoc-11-ket-noi-tri-thuc-c1587.html",
+  "chapters": [
+    {
+      "chapter_name": "Chủ đề 1. Máy tính và xã hội tri thức",
+      "lessons": [
+        "Bài 1. Hệ điều hành",
+        "Bài 2. Thực hành sử dụng hệ điều hành",
+        "Bài 3. Phần mềm nguồn mở và phần mềm Internet",
+        "Bài 4. Bên trong máy tính",
+        "Bài 5. Kết nối máy tính với các thiết bị số"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 2. Tổ chức lưu trữ, tìm kiếm và trao đổi thông tin",
+      "lessons": [
+        "Bài 6. Lưu trữ và chia sẻ tệp tin trên Internet",
+        "Bài 7. Thực hành tìm kiếm thông tin trên Internet"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 3. Đạo đức, pháp luật và văn hóa trong môi trường số",
+      "lessons": [
+        "Bài 9. Giao tiếp an toàn trên Internet"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 4. Giới thiệu các hệ cơ sở dữ liệu",
+      "lessons": [
+        "Bài 10. Lưu trữ dữ liệu và khai thác thông tin phục vụ quản lí",
+        "Bài 11. Cơ sở dữ liệu",
+        "Bài 12. Hệ quản trị cơ sở dữ liệu và hệ cơ sở dữ liệu",
+        "Bài 13. Cơ sở dữ liệu quan hệ",
+        "Bài 14. SQL - Ngôn ngữ truy vấn có cấu trúc",
+        "Bài 15. Bảo mật và an toàn hệ cơ sở dữ liệu"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 5. Hướng nghiệp với tin học",
+      "lessons": [
+        "Bài 16. Công việc quản trị cơ sở dữ liệu"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 6. Thực hành tạo và khai thác cơ sở dữ liệu",
+      "lessons": [
+        "Bài 17. Quản trị cơ sở dữ liệu trên máy tính",
+        "Bài 18. Thực hành xác định cấu trúc bảng và các trường khóa",
+        "Bài 19. Thực hành tạo lập cơ sở dữ liệu và các bảng",
+        "Bài 20. Thực hành tạo lập các bảng có khóa ngoài",
+        "Bài 21. Thực hành cập nhật và truy xuất dữ liệu các bảng",
+        "Bài 22. Thực hành cập nhật bảng dữ liệu có tham chiếu",
+        "Bài 23. Thực hành truy xuất dữ liệu qua liên kết các bảng",
+        "Bài 24. Thực hành sao lưu dữ liệu"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 7. Phần mềm chỉnh sửa ảnh và làm video",
+      "lessons": [
+        "Bài 25. Phần mềm chỉnh sửa ảnh",
+        "Bài 26. Công cụ tinh chỉnh màu sắc và công cụ chọn",
+        "Bài 27. Công cụ vẽ và một số ứng dụng",
+        "Bài 28. Tạo ảnh động",
+        "Bài 29. Khám phá phần mềm làm phim",
+        "Bài 31. Thực hành tạo phim hoạt hình",
+        "Bài 30. Biên tập phim"
+      ]
+    },
+    {
+      "chapter_name": "Chủ đề 6. Kĩ thuật lập trình",
+      "lessons": [
+        "Bài 17. Dữ liệu mảng một chiều và hai chiều",
+        "Bài 18. Thực hành dữ liệu mảng một chiều và hai chiều",
+        "Bài 19. Bài toán tìm kiếm",
+        "Bài 20. Thực hành bài toán tìm kiếm",
+        "Bài 21. Các thuật toán sắp xếp đơn giản",
+        "Bài 22. Thực hành bài toán sắp xếp",
+        "Bài 22. Kiếm thử và đánh giá chương trình",
+        "Bài 24. Đánh giá độ phức tạp thời gian thuật toán",
+        "Bài 25. Thực hành xác định độ phức tạp thời gian thuật toán",
+        "Bài 26. Phương pháp làm mịn dần trong thiết kế chương trình",
+        "Bài 27. Thực hành thiết kế chương trình theo phương pháp làm mịn dần",
+        "Bài 28. Thiết kế chương trình theo mô đun",
+        "Bài 29. Thực hành thiết kế chương trình theo mô đun",
+        "Bài 30. Thiết lập thư viện cho chương trình",
+        "Bài 31. Thực hành thiết lập thư viên chương trình"
+      ]
+    }
+  ]
+}
