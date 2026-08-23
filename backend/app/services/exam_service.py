@@ -106,16 +106,15 @@ def _parse_json_safely(raw: str) -> Any:
     raw = raw.strip()
     # Tìm block ```json ... ```
     import re
-    # Dùng greedy match để không dừng ở dấu `}` lồng trong options/explanation.
-    match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', raw, re.DOTALL)
+    # Lấy nội dung trong code fence nếu có; phần sau fence đôi khi là lời giải thích thừa.
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL | re.IGNORECASE)
     if match:
         raw = match.group(1)
     else:
-        # Nếu không có markdown block, cố gắng tìm ngoặc nhọn đầu tiên và cuối cùng
+        # Nếu không có markdown block, bắt đầu từ ngoặc nhọn đầu tiên.
         start = raw.find('{')
-        end = raw.rfind('}')
-        if start != -1 and end != -1:
-            raw = raw[start:end+1]
+        if start != -1:
+            raw = raw[start:]
     
     raw = raw.strip()
     # Loại bỏ trailing commas trước ngoặc đóng
@@ -128,7 +127,9 @@ def _parse_json_safely(raw: str) -> Any:
     raw = re.sub(r'(?<!\\)\\(?![\\n"])', r'\\\\', raw)
     
     try:
-        return json.loads(raw)
+        # raw_decode đọc đúng một object đầu tiên, không bị lỗi bởi text/JSON thừa phía sau.
+        value, _ = json.JSONDecoder().raw_decode(raw)
+        return value
     except json.JSONDecodeError as e:
         logger.warning(f"JSONDecodeError in _parse_json_safely: {e}. Raw text: {raw[:200]}...")
         # Fallback cuối cùng nếu vẫn lỗi
@@ -710,7 +711,7 @@ MỤC TIÊU HỌC TẬP CỦA HỌC VIÊN: {selected_goal}
 
 NỘI DUNG TÀI LIỆU (trích xuất từ file người dùng upload):
 ---
-{document_text[:6000]}
+{_sample_text_for_classification(document_text, 6000)}
 ---
 
 NHIỆM VỤ: Tạo CHÍNH XÁC 7 câu hỏi trắc nghiệm để kiểm tra năng lực, chia làm 2 phần:
