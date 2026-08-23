@@ -28,12 +28,6 @@ class PersonalizedRoadmapResponse(BaseModel):
     created_at: str
     source_version_id: UUID | None = None
 
-
-class SubjectDocumentChatRequest(BaseModel):
-    subject: str = Field(min_length=1, max_length=255)
-    question: str = Field(min_length=2, max_length=3000)
-    session_id: UUID | None = None
-
     @classmethod
     def from_orm(cls, roadmap: PersonalizedRoadmap, source_version_id: UUID | None = None) -> "PersonalizedRoadmapResponse":
         return cls(
@@ -47,6 +41,12 @@ class SubjectDocumentChatRequest(BaseModel):
         )
 
 
+class SubjectDocumentChatRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=255)
+    question: str = Field(min_length=2, max_length=3000)
+    session_id: UUID | None = None
+
+
 async def _source_version_id(session: AsyncSession, roadmap: PersonalizedRoadmap, user: User) -> UUID | None:
     subject = roadmap.title.strip().lower()
     result = await session.scalar(
@@ -54,7 +54,6 @@ async def _source_version_id(session: AsyncSession, roadmap: PersonalizedRoadmap
         .join(Course, Course.id == CourseVersion.course_id)
         .join(DocumentAnalysis, DocumentAnalysis.course_version_id == CourseVersion.id)
         .where(
-            Course.owner_id == user.id,
             CourseVersion.status.in_([CourseVersionStatus.READY_FOR_REVIEW.value, CourseVersionStatus.PUBLISHED.value]),
             func.lower(Course.subject) == subject,
             DocumentAnalysis.status == "completed",
@@ -145,7 +144,6 @@ async def chat_by_subject(
         .join(Course, Course.id == CourseVersion.course_id)
         .join(DocumentAnalysis, DocumentAnalysis.course_version_id == CourseVersion.id)
         .where(
-            Course.owner_id == current_user.id,
             func.lower(Course.subject) == payload.subject.strip().lower(),
             DocumentAnalysis.status == "completed",
         )

@@ -50,12 +50,14 @@ import {
   discardTempFile,
   getExamAnalysisFileBlob,
   type CompetencyEvidenceResult,
+  type ExamResources,
   type DocumentAnalysisResult,
   type ExamAnalysisDetail,
   type ExamAnalysisSummary,
   type ExamRecommendation,
   type InlineRoadmap,
   type PhaseResources,
+  type RoadmapPhase,
   type QuizQuestion,
   type ParseExamResponse,
   type SubjectSummary,
@@ -618,6 +620,7 @@ export function RoadmapInlinePanel({
   const [expandedPhase, setExpandedPhase] = useState<number | null>(0);
   const [applied, setApplied] = useState(false);
   const preview = useDocumentPreview();
+  const [previewText, setPreviewText] = useState("");
 
   const totalDays = roadmap.total_days ?? roadmap.phases.reduce((s, p) => s + p.days.length, 0);
   const formatDate = (iso: string) =>
@@ -659,6 +662,11 @@ export function RoadmapInlinePanel({
     const details = encodeURIComponent(`${phase.why ?? ""}\n\nChủ đề: ${allTopics.join(", ")}\n\nCột mốc: ${phase.milestone}`);
     return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(start)}/${fmt(end)}&details=${details}`;
   }
+
+  useEffect(() => {
+    if (!preview.isOpen || !analysisId) return;
+    void getExamAnalysis(analysisId).then((detail) => setPreviewText(detail.raw_markdown ?? ""));
+  }, [preview.isOpen, analysisId]);
 
   return (
     <div className="space-y-5">
@@ -818,6 +826,7 @@ export function RoadmapInlinePanel({
           url={preview.url}
           loading={preview.loading}
           error={preview.error}
+          extractedText={previewText}
           onClose={preview.close}
         />
       )}
@@ -1794,7 +1803,7 @@ function OnboardingFlow() {
         </div>
       )}
 
-      {needsFileReattach && files.length === 0 && screen !== "upload_and_info" && screen !== "subject_list" && (
+      {needsFileReattach && files.length === 0 && screen !== "upload_and_info" && (
         <div className="flex flex-col gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 max-w-2xl mx-auto sm:flex-row sm:items-center">
           <AlertCircle className="size-4 shrink-0 text-amber-500" />
           <p className="flex-1">
