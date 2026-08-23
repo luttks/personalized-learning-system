@@ -577,15 +577,24 @@ function DocumentPreviewModal({
             if (["jpg", "jpeg", "png", "webp"].includes(ext)) {
               return <img src={url} alt={filename} className="max-w-full max-h-full object-contain" />;
             }
+            if ((ext === "pdf" || ext === "docx") && extractedText && highlightedTerms.length > 0) {
+              const terms = highlightedTerms
+                .flatMap((term) => term.split(/[,;:|–—-]+|\s{2,}/))
+                .map((term) => term.trim().toLowerCase())
+                .filter((term) => term.length > 3)
+                .flatMap((term) => [term, ...term.split(/\s+/).filter((word) => word.length > 4)])
+                .filter((term, index, all) => all.indexOf(term) === index);
+              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700"><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Đang highlight nội dung liên quan tới buổi học: {highlightedTerms.filter(Boolean).join(" · ")}</div>{extractedText.split("\n").map((line, index) => {
+                const normalized = line.toLowerCase();
+                const highlighted = terms.some((term) => normalized.includes(term));
+                return <p key={`${index}-${line.slice(0, 12)}`} className={highlighted ? "my-1 rounded bg-amber-100 px-2 py-1 font-medium ring-1 ring-amber-300" : "my-1"}>{line || " "}</p>;
+              })}</div>;
+            }
             if (ext === "pdf") {
               return <iframe src={url} title={filename} className="w-full h-full border-0" />;
             }
             if (ext === "docx" && extractedText) {
-              const terms = highlightedTerms.filter((term) => term.trim().length > 3).map((term) => term.toLowerCase());
-              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700">{extractedText.split("\n").map((line, index) => {
-                const highlighted = terms.some((term) => line.toLowerCase().includes(term));
-                return <p key={`${index}-${line.slice(0, 12)}`} className={highlighted ? "my-1 rounded bg-amber-100 px-2 ring-1 ring-amber-300" : "my-1"}>{line || " "}</p>;
-              })}</div>;
+              return <pre className="h-full w-full overflow-auto whitespace-pre-wrap bg-white p-6 text-left text-sm leading-7 text-slate-700">{extractedText}</pre>;
             }
             return (
               <div className="flex flex-col items-center gap-3 text-sm text-slate-500 px-6 text-center">
