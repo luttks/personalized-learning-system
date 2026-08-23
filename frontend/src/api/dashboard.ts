@@ -6,6 +6,7 @@ export interface DashboardStats {
   roadmap_count: number;
   study_minutes_per_day: number | null;
   study_days_per_week: number | null;
+  total_study_minutes: number;
 }
 
 export async function getDashboardStats(): Promise<DashboardStats> {

@@ -101,8 +101,8 @@ export function DashboardPage() {
           <StatCard icon={FileText} label="Tài liệu khóa học" value={stats?.course_document_count ?? "—"} tone="emerald" />
           <StatCard icon={ClipboardCheck} label="Bài kiểm tra đã upload" value={stats?.exam_upload_count ?? "—"} tone="blue" />
           <StatCard icon={Map} label="Lộ trình đã tạo" value={stats?.roadmap_count ?? "—"} tone="indigo" />
-          <StatCard icon={Clock3} label="Học mỗi ngày" value={stats?.study_minutes_per_day != null ? `${stats.study_minutes_per_day} phút` : "—"} tone="amber" />
-          <StatCard icon={BookOpenCheck} label="Ngày học mỗi tuần" value={stats?.study_days_per_week != null ? `${stats.study_days_per_week} ngày` : "—"} tone="violet" />
+          <StatCard icon={Clock3} label="Tổng thời gian học" value={stats ? `${stats.total_study_minutes} phút` : "—"} tone="amber" />
+          <StatCard icon={BookOpenCheck} label="Thời gian mục tiêu/ngày" value={stats?.study_minutes_per_day != null ? `${stats.study_minutes_per_day} phút` : "—"} tone="violet" />
         </div>
       </section>
     </div>
