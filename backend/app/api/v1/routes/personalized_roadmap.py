@@ -123,7 +123,32 @@ async def chat_with_roadmap_document(
         raise HTTPException(status_code=404, detail="Roadmap not found")
     source_version_id = await _source_version_id(session, roadmap, current_user)
     if not source_version_id:
-        raise HTTPException(status_code=409, detail="Chưa tìm thấy tài liệu nguồn đã lập chỉ mục cho lộ trình này.")
+        from app.models.exam_analysis_model import ExamAnalysis
+        analysis = await session.scalar(
+            select(ExamAnalysis).where(
+                ExamAnalysis.id == roadmap.exam_analysis_id,
+                ExamAnalysis.raw_markdown.is_not(None),
+            )
+        )
+        if analysis is None or not analysis.raw_markdown:
+            raise HTTPException(status_code=409, detail="Chưa tìm thấy tài liệu nguồn đã lập chỉ mục cho lộ trình này.")
+        prompt = f"""Bạn là trợ lý học tập. Trả lời bằng tiếng Việt, chỉ dựa trên tài liệu gốc bên dưới. Nếu không có thông tin, nói rõ chưa tìm thấy trong tài liệu.\n\nTÀI LIỆU GỐC:\n{analysis.raw_markdown[:120000]}\n\nCÂU HỎI:\n{payload.question.strip()}"""
+        try:
+            answer = await _call_llm_with_fallback(prompt, settings.gemini_api_keys, settings.llm_api_keys, settings.llm_base_url, settings.llm_model or "", timeout=60, expect_json=False)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Dịch vụ AI hiện không khả dụng.") from error
+        from datetime import UTC, datetime
+        now = datetime.now(UTC)
+        chat_id = payload.session_id or uuid4()
+        return DocumentChatSessionResponse(
+            id=chat_id,
+            course_version_id=uuid4(),
+            title=f"Hỏi đáp {roadmap.title}",
+            messages=[
+                DocumentChatMessageResponse(id=uuid4(), role="user", content=payload.question.strip(), citations=[], sequence=1, created_at=now),
+                DocumentChatMessageResponse(id=uuid4(), role="assistant", content=answer.strip(), citations=[{"source_label": analysis.filename}], sequence=2, created_at=now),
+            ],
+        )
     try:
         chat, messages = await chat_about_document(session, current_user, source_version_id, payload.question.strip(), payload.session_id)
     except Exception as error:
