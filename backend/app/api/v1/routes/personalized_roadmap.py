@@ -1,5 +1,6 @@
 from typing import Any
 from uuid import UUID
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -15,6 +16,8 @@ from app.models.document_analysis import DocumentAnalysis
 from app.services.document_chat_service import chat_about_document
 from app.schemas.content import DocumentChatRequest, DocumentChatSessionResponse, DocumentChatMessageResponse
 from app.services.learner_service import get_learner_profile
+from app.core.config import settings
+from app.services.exam_service import _call_llm_with_fallback
 
 router = APIRouter()
 
@@ -150,7 +153,37 @@ async def chat_by_subject(
         .order_by(CourseVersion.created_at.desc())
     )
     if not version_id:
-        raise HTTPException(status_code=409, detail="Chưa có tài liệu nguồn cho môn học này.")
+        # Onboarding uploads are stored as ExamAnalysis (not CourseVersion). Use that
+        # extracted source directly so students do not need to upload the document again.
+        from app.models.exam_analysis_model import ExamAnalysis
+        analysis = await session.scalar(
+            select(ExamAnalysis)
+            .where(
+                ExamAnalysis.learner_id == (await get_learner_profile(session, current_user.id)).id,
+                func.lower(ExamAnalysis.subject) == payload.subject.strip().lower(),
+                ExamAnalysis.raw_markdown.is_not(None),
+            )
+            .order_by(ExamAnalysis.created_at.desc())
+        )
+        if analysis is None or not analysis.raw_markdown:
+            raise HTTPException(status_code=409, detail="Chưa có tài liệu nguồn cho môn học này.")
+        prompt = f"""Bạn là trợ lý học tập. Hãy trả lời bằng tiếng Việt, chỉ dựa trên tài liệu gốc dưới đây. Nếu không có thông tin, nói rõ không tìm thấy trong tài liệu.\n\nTÀI LIỆU:\n{analysis.raw_markdown[:120000]}\n\nCÂU HỎI:\n{payload.question.strip()}"""
+        try:
+            answer = await _call_llm_with_fallback(prompt, settings.gemini_api_keys, settings.llm_api_keys, settings.llm_base_url, settings.llm_model or "", timeout=60, expect_json=False)
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Dịch vụ AI hiện không khả dụng.") from error
+        chat_id = payload.session_id or uuid4()
+        from datetime import datetime, UTC
+        now = datetime.now(UTC)
+        return DocumentChatSessionResponse(
+            id=chat_id,
+            course_version_id=uuid4(),
+            title=f"Hỏi đáp {payload.subject}",
+            messages=[
+                DocumentChatMessageResponse(id=uuid4(), role="user", content=payload.question.strip(), citations=[], sequence=1, created_at=now),
+                DocumentChatMessageResponse(id=uuid4(), role="assistant", content=answer.strip(), citations=[{"source_label": analysis.filename}], sequence=2, created_at=now),
+            ],
+        )
     try:
         chat, messages = await chat_about_document(session, current_user, version_id, payload.question.strip(), payload.session_id)
     except Exception as error:
