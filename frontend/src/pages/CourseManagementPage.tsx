@@ -245,8 +245,8 @@ export function CourseManagementPage() {
   return (
     <div className="space-y-7">
       <PageHeader
-        title="Khóa học và tài liệu"
-        description="Tạo bản nháp, upload tài liệu và theo dõi bước xác minh file."
+        title="Tài liệu & Chatbot"
+        description="Upload tài liệu, mở mục lục để đọc theo chương và hỏi đáp trực tiếp bằng RAG."
         actions={<Button variant="secondary" onClick={() => void loadCourses()}><RefreshCw className="size-4" /> Làm mới</Button>}
       />
       {error && <Notice>{error}</Notice>}
@@ -537,7 +537,7 @@ function DocumentRepository({
           {documents.map((item) => (
             <div key={item.document.id} className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0">
               <div className="min-w-0"><p className="truncate text-sm font-semibold text-slate-800">Version {item.version.version_number} · {item.document.original_name}</p><p className="mt-1 text-xs text-slate-500">{statusLabels[item.job.status] ?? item.job.status} · {item.source_characters.toLocaleString("vi-VN")} ký tự</p></div>
-              <div className="flex items-center gap-2"><Button type="button" variant="secondary" className="px-3" disabled={item.analysis_status !== "completed" || previewing} onClick={() => void onPreview(item.version.id)}><Eye className="size-4" /> Preview</Button>{canDelete && <Button type="button" variant="danger" className="px-3" aria-label={`Xóa ${item.document.original_name}`} isLoading={deletingId === item.version.id} onClick={() => void onDelete(item)}><Trash2 className="size-4" /></Button>}</div>
+              <div className="flex items-center gap-2"><Button type="button" variant="secondary" className="px-3" disabled={item.analysis_status !== "completed" || previewing} onClick={() => void onPreview(item.version.id)}><Eye className="size-4" /> Đọc & hỏi đáp</Button>{canDelete && <Button type="button" variant="danger" className="px-3" aria-label={`Xóa ${item.document.original_name}`} isLoading={deletingId === item.version.id} onClick={() => void onDelete(item)}><Trash2 className="size-4" /></Button>}</div>
             </div>
           ))}
         </div>
