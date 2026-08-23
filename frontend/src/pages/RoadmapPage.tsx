@@ -1,6 +1,7 @@
 import { CalendarDays, ChevronLeft, Map, MessageCircle, Send, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import Markdown from "react-markdown";
 
 import { getApiErrorMessage } from "../api/client";
 import { type PhaseResources } from "../api/exam";
@@ -169,7 +170,7 @@ function RoadmapDocumentChat({ roadmap }: { roadmap: PersonalizedRoadmapResponse
   async function ask(event: FormEvent) {
     event.preventDefault();
     const value = question.trim();
-    if (!value || !roadmap.source_version_id) return;
+    if (!value) return;
     setLoading(true);
     setError("");
     try {
@@ -184,5 +185,5 @@ function RoadmapDocumentChat({ roadmap }: { roadmap: PersonalizedRoadmapResponse
     }
   }
 
-  return <section className="rounded-xl border border-emerald-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-emerald-100 text-emerald-700"><MessageCircle className="size-5" /></div><div><h2 className="font-bold text-slate-900">Hỏi đáp theo tài liệu của lộ trình</h2><p className="text-xs text-slate-500">Chatbot dùng tài liệu đã upload trước đó, không cần upload lại.</p></div></div>{!roadmap.source_version_id ? <p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">Chưa tìm thấy tài liệu nguồn đã lập chỉ mục cho môn học này.</p> : <><div className="mt-4 max-h-80 space-y-3 overflow-y-auto">{messages.map((message) => <div key={message.id} className={`rounded-lg p-3 text-sm ${message.role === "user" ? "ml-8 bg-emerald-50" : "mr-8 bg-slate-100"}`}><p className="whitespace-pre-wrap">{message.content}</p>{message.citations.length > 0 && <p className="mt-2 text-xs text-slate-500">Nguồn: {message.citations.map((citation) => citation.source_label).join(", ")}</p>}</div>)}</div>{error && <Notice>{error}</Notice>}<form className="mt-4 flex gap-2" onSubmit={ask}><Input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Hỏi về nội dung đang học..." maxLength={3000} /><Button type="submit" isLoading={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></Button></form></>}</section>;
+  return <section className="rounded-xl border border-emerald-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-emerald-100 text-emerald-700"><MessageCircle className="size-5" /></div><div><h2 className="font-bold text-slate-900">Hỏi đáp theo tài liệu của lộ trình</h2><p className="text-xs text-slate-500">Chatbot dùng tài liệu đã upload trước đó, không cần upload lại.</p></div></div><div className="mt-4 max-h-[min(32rem,60vh)] min-h-24 space-y-3 overflow-y-auto rounded-lg bg-slate-50 p-3">{messages.length === 0 && <p className="p-3 text-sm text-slate-500">Đặt câu hỏi để bắt đầu trao đổi với tài liệu.</p>}{messages.map((message) => <div key={message.id} className={`rounded-lg p-4 text-sm leading-6 ${message.role === "user" ? "ml-8 bg-emerald-50" : "mr-8 bg-white shadow-sm"}`}><div className="prose prose-sm max-w-none prose-headings:mt-3 prose-headings:mb-1 prose-p:my-1 prose-ul:my-1 prose-ol:my-1"><Markdown>{message.content}</Markdown></div>{message.citations.length > 0 && <p className="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-500">Nguồn: {message.citations.map((citation) => citation.source_label).join(", ")}</p>}</div>)}</div>{error && <Notice>{error}</Notice>}<form className="mt-4 flex gap-2" onSubmit={ask}><Input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Hỏi về nội dung đang học..." maxLength={3000} /><Button type="submit" isLoading={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></Button></form></section>;
 }
