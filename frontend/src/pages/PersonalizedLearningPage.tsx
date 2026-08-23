@@ -578,15 +578,25 @@ function DocumentPreviewModal({
               return <img src={url} alt={filename} className="max-w-full max-h-full object-contain" />;
             }
             if ((ext === "pdf" || ext === "docx") && extractedText && highlightedTerms.length > 0) {
-              const terms = highlightedTerms
-                .flatMap((term) => term.split(/[,;:|–—-]+|\s{2,}/))
-                .map((term) => term.trim().toLowerCase())
-                .filter((term) => term.length > 3)
-                .flatMap((term) => [term, ...term.split(/\s+/).filter((word) => word.length > 4)])
-                .filter((term, index, all) => all.indexOf(term) === index);
-              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700"><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Đang highlight nội dung liên quan tới buổi học: {highlightedTerms.filter(Boolean).join(" · ")}</div>{extractedText.split("\n").map((line, index) => {
+              const lines = extractedText.split("\n");
+              const phrases = highlightedTerms
+                .filter((term) => term.trim().length > 3)
+                .map((term) => term.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim())
+                .filter(Boolean);
+              const words = Array.from(new Set(phrases.flatMap((phrase) => phrase.split(" ").filter((word) => word.length > 4))));
+              const scores = lines.map((line) => {
                 const normalized = line.toLowerCase();
-                const highlighted = terms.some((term) => normalized.includes(term));
+                return phrases.reduce((score, phrase) => score + (normalized.includes(phrase) ? 5 : 0), 0)
+                  + words.reduce((score, word) => score + (normalized.includes(word) ? 1 : 0), 0);
+              });
+              const start = scores.reduce((best, score, index) => score > scores[best] ? index : best, 0);
+              const hasMatch = scores[start] > 0;
+              const nextHeading = /^(\s*(?:chương|bài)\s+\d+|\s*\d+\.\s+)/i;
+              const end = hasMatch ? lines.findIndex((line, index) => index > start && nextHeading.test(line.trim())) : -1;
+              const highlightStart = hasMatch ? start : -1;
+              const highlightEnd = hasMatch ? (end === -1 ? Math.min(lines.length, start + 80) : end) : -1;
+              return <div className="h-full w-full overflow-auto bg-white p-6 text-left text-sm leading-7 text-slate-700"><div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">Đang highlight mục liên quan: {highlightedTerms.filter(Boolean).join(" · ")}</div>{lines.map((line, index) => {
+                const highlighted = index >= highlightStart && index < highlightEnd;
                 return <p key={`${index}-${line.slice(0, 12)}`} className={highlighted ? "my-1 rounded bg-amber-100 px-2 py-1 font-medium ring-1 ring-amber-300" : "my-1"}>{line || " "}</p>;
               })}</div>;
             }
