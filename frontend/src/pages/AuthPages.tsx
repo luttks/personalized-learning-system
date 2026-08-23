@@ -10,7 +10,7 @@ import {
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { register } from "../api/auth";
+import { register, requestPasswordReset, resetPassword } from "../api/auth";
 import { getApiErrorMessage } from "../api/client";
 import { useAuth } from "../auth/useAuth";
 import heroImage from "../assets/hero.png";
@@ -98,6 +98,10 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -114,13 +118,35 @@ export function LoginPage() {
     }
   }
 
+  async function handleForgot(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      if (!resetSent) {
+        await requestPasswordReset(email);
+        setResetSent(true);
+      } else {
+        await resetPassword({ email, code, new_password: newPassword });
+        setForgotMode(false);
+        setResetSent(false);
+        setCode("");
+        setNewPassword("");
+      }
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể xử lý yêu cầu đổi mật khẩu."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <AuthFrame>
       <p className="text-sm font-semibold text-emerald-700">Chào mừng trở lại</p>
       <h2 className="mt-2 text-3xl font-bold text-slate-950">Đăng nhập</h2>
-      <p className="mt-2 text-sm text-slate-500">Tiếp tục phiên học tập của bạn.</p>
+      <p className="mt-2 text-sm text-slate-500">{forgotMode ? "Nhận mã xác nhận để đặt mật khẩu mới." : "Tiếp tục phiên học tập của bạn."}</p>
 
-      <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
+      <form className="mt-8 space-y-5" onSubmit={forgotMode ? handleForgot : handleSubmit}>
         {error && <Notice>{error}</Notice>}
         <Field label="Email">
           <div className="relative">
@@ -135,13 +161,19 @@ export function LoginPage() {
             />
           </div>
         </Field>
-        <Field label="Mật khẩu">
-          <PasswordInput value={password} onChange={setPassword} />
-        </Field>
-        <Button className="w-full" type="submit" isLoading={loading}>
-          Đăng nhập <ArrowRight className="size-4" />
-        </Button>
+        {!forgotMode && <>
+          <Field label="Mật khẩu"><PasswordInput value={password} onChange={setPassword} /></Field>
+          <Button className="w-full" type="submit" isLoading={loading}>Đăng nhập <ArrowRight className="size-4" /></Button>
+        </>}
+        {forgotMode && resetSent && <>
+          <Field label="Mã xác nhận"><Input value={code} onChange={(event) => setCode(event.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required /></Field>
+          <Field label="Mật khẩu mới" hint="Tối thiểu 8 ký tự"><PasswordInput value={newPassword} onChange={setNewPassword} /></Field>
+          <Button className="w-full" type="submit" isLoading={loading}>Đổi mật khẩu <ArrowRight className="size-4" /></Button>
+        </>}
       </form>
+
+      {!forgotMode && <button type="button" className="mt-4 block w-full text-center text-sm font-semibold text-emerald-700" onClick={() => { setForgotMode(true); setError(""); }}>Quên mật khẩu?</button>}
+      {forgotMode && <button type="button" className="mt-4 block w-full text-center text-sm text-slate-500" onClick={() => { setForgotMode(false); setResetSent(false); setError(""); }}>Quay lại đăng nhập</button>}
 
       <p className="mt-7 text-center text-sm text-slate-500">
         Chưa có tài khoản?{" "}

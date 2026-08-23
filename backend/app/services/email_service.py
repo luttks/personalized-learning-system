@@ -85,3 +85,10 @@ async def send_daily_reminder_email(*, email: str, learner_name: str, course_nam
     subject = f"📚 Lịch học hôm nay (Ngày {day.get('day_number', '')}): {course_name}"
     body = "<html><body>" + "<br>".join(html.escape(line) for line in lines) + f'<p><a href="{html.escape(settings.app_base_url)}/roadmap">Bắt đầu học ngay</a></p></body></html>'
     await send_email(email, subject, text, body)
+
+
+async def send_password_reset_email(*, email: str, learner_name: str, code: str) -> None:
+    subject = "Mã xác nhận đổi mật khẩu - Personalized Learning System"
+    text = f"Chào {learner_name},\n\nMã xác nhận đổi mật khẩu của bạn là: {code}\nMã có hiệu lực trong 10 phút và chỉ dùng một lần.\n\nNếu bạn không yêu cầu, hãy bỏ qua email này."
+    body = f"<html><body><p>Chào {html.escape(learner_name)},</p><p>Mã xác nhận đổi mật khẩu:</p><h2>{code}</h2><p>Mã có hiệu lực trong 10 phút và chỉ dùng một lần.</p></body></html>"
+    await send_email(email, subject, text, body)

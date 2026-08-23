@@ -12,12 +12,14 @@ from app.core.config import settings
 from app.db.session import get_db_session
 from app.models.user import User
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     LoginRequest,
     LogoutRequest,
     MessageResponse,
     RefreshRequest,
     RefreshResponse,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
 )
 from app.schemas.user import UserResponse
@@ -32,14 +34,18 @@ from app.services.auth_service import (
     revoke_refresh_token,
     rotate_refresh_token,
 )
+from app.services.email_service import send_password_reset_email
+from app.services.password_reset_service import issue_reset_code, reset_password
 from app.services.user_service import (
     EmailAlreadyExistsError,
 )
+
 
 async def _enrich_user_response(session: AsyncSession, user: User) -> UserResponse:
     resp = UserResponse.model_validate(user)
     if user.role.value == "student":
         from sqlalchemy import select
+
         from app.models.student_profile import StudentProfile
         result = await session.execute(
             select(StudentProfile.id).where(StudentProfile.user_id == user.id)
@@ -53,6 +59,27 @@ router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
 )
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    user, code = await issue_reset_code(session, str(payload.email))
+    if user and code:
+        await send_password_reset_email(email=user.email, learner_name=user.full_name, code=code)
+    return MessageResponse(message="Nếu email tồn tại, mã xác nhận đã được gửi.")
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password_route(
+    payload: ResetPasswordRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    if not await reset_password(session, str(payload.email), payload.code, payload.new_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mã xác nhận không hợp lệ hoặc đã hết hạn.")
+    return MessageResponse(message="Đổi mật khẩu thành công. Vui lòng đăng nhập lại.")
 
 
 def get_request_ip(

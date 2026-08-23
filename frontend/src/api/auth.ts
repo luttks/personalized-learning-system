@@ -28,3 +28,13 @@ export async function logout(refreshToken: string): Promise<void> {
 export async function logoutAll(): Promise<void> {
   await apiClient.post("/auth/logout-all");
 }
+
+export async function requestPasswordReset(email: string): Promise<string> {
+  const response = await apiClient.post<{ message: string }>("/auth/forgot-password", { email });
+  return response.data.message;
+}
+
+export async function resetPassword(payload: { email: string; code: string; new_password: string }): Promise<string> {
+  const response = await apiClient.post<{ message: string }>("/auth/reset-password", payload);
+  return response.data.message;
+}

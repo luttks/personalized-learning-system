@@ -29,6 +29,7 @@ from app.models.learner import (
 )
 from app.models.learner_course_profile import LearnerCourseProfile
 from app.models.personalized_roadmap import PersonalizedRoadmap
+from app.models.password_reset import PasswordResetCode
 from app.models.refresh_token import RefreshToken
 from app.models.student_profile import StudentProfile
 from app.models.user import User, UserRole
@@ -58,6 +59,7 @@ __all__ = [
     "LearnerTopicMastery",
     "MasteryHistory",
     "PersonalizedRoadmap",
+    "PasswordResetCode",
     "RefreshToken",
     "Roadmap",
     "RoadmapItem",
