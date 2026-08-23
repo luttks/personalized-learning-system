@@ -1,11 +1,11 @@
-import { CalendarDays, ChevronLeft, Map, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CalendarDays, ChevronLeft, Map, MessageCircle, Send, Trash2 } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 
 import { getApiErrorMessage } from "../api/client";
 import { type PhaseResources } from "../api/exam";
-import { deletePersonalizedRoadmap, getPersonalizedRoadmaps, type PersonalizedRoadmapResponse } from "../api/personalized_roadmap";
-import { Button, Notice, PageHeader } from "../components/ui";
+import { chatWithRoadmap, deletePersonalizedRoadmap, getPersonalizedRoadmaps, type PersonalizedRoadmapResponse } from "../api/personalized_roadmap";
+import { Button, Input, Notice, PageHeader } from "../components/ui";
 import { RoadmapInlinePanel } from "./PersonalizedLearningPage";
 
 export function RoadmapPage() {
@@ -83,6 +83,7 @@ export function RoadmapPage() {
           subject={selectedRoadmap.title}
           goal="Hoàn thành lộ trình"
         />
+        <RoadmapDocumentChat roadmap={selectedRoadmap} />
       </div>
     );
   }
@@ -156,4 +157,32 @@ export function RoadmapPage() {
       )}
     </div>
   );
+}
+
+function RoadmapDocumentChat({ roadmap }: { roadmap: PersonalizedRoadmapResponse }) {
+  const [question, setQuestion] = useState("");
+  const [messages, setMessages] = useState<import("../types/course").DocumentChatMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function ask(event: FormEvent) {
+    event.preventDefault();
+    const value = question.trim();
+    if (!value || !roadmap.source_version_id) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await chatWithRoadmap(roadmap.id, value, sessionId);
+      setSessionId(result.id);
+      setMessages((current) => [...current, ...result.messages]);
+      setQuestion("");
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể trả lời từ tài liệu nguồn."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return <section className="rounded-xl border border-emerald-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-emerald-100 text-emerald-700"><MessageCircle className="size-5" /></div><div><h2 className="font-bold text-slate-900">Hỏi đáp theo tài liệu của lộ trình</h2><p className="text-xs text-slate-500">Chatbot dùng tài liệu đã upload trước đó, không cần upload lại.</p></div></div>{!roadmap.source_version_id ? <p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">Chưa tìm thấy tài liệu nguồn đã lập chỉ mục cho môn học này.</p> : <><div className="mt-4 max-h-80 space-y-3 overflow-y-auto">{messages.map((message) => <div key={message.id} className={`rounded-lg p-3 text-sm ${message.role === "user" ? "ml-8 bg-emerald-50" : "mr-8 bg-slate-100"}`}><p className="whitespace-pre-wrap">{message.content}</p>{message.citations.length > 0 && <p className="mt-2 text-xs text-slate-500">Nguồn: {message.citations.map((citation) => citation.source_label).join(", ")}</p>}</div>)}</div>{error && <Notice>{error}</Notice>}<form className="mt-4 flex gap-2" onSubmit={ask}><Input value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Hỏi về nội dung đang học..." maxLength={3000} /><Button type="submit" isLoading={loading} aria-label="Gửi câu hỏi"><Send className="size-4" /></Button></form></>}</section>;
 }

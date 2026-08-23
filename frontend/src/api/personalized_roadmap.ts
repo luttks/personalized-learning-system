@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import { type InlineRoadmap } from "./exam";
+import type { DocumentChatSession } from "../types/course";
 
 export interface PersonalizedRoadmapResponse {
   id: string;
@@ -8,6 +9,7 @@ export interface PersonalizedRoadmapResponse {
   total_weeks: number;
   roadmap_data: InlineRoadmap;
   created_at: string;
+  source_version_id: string | null;
 }
 
 export async function getPersonalizedRoadmaps(): Promise<PersonalizedRoadmapResponse[]> {
@@ -22,4 +24,8 @@ export async function getPersonalizedRoadmap(id: string): Promise<PersonalizedRo
 
 export async function deletePersonalizedRoadmap(id: string): Promise<void> {
   await apiClient.delete(`/learners/me/roadmaps/${id}`);
+}
+
+export async function chatWithRoadmap(roadmapId: string, question: string, sessionId?: string): Promise<DocumentChatSession> {
+  return (await apiClient.post<DocumentChatSession>(`/learners/me/roadmaps/${roadmapId}/chat`, { question, session_id: sessionId ?? null }, { timeout: 120_000 })).data;
 }

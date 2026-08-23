@@ -35,7 +35,7 @@ const navigation: NavItem[] = [
   { to: "/personalized/onboarding", label: "Lộ trình học", icon: BookOpen, roles: ["student"] },
   { to: "/personalized/post-exam", label: "Cải thiện sau thi", icon: Trophy, roles: ["student"] },
   { to: "/roadmap", label: "Quản lý lộ trình", icon: Map, roles: ["student"] },
-  { to: "/courses", label: "Tài liệu & Chatbot", icon: FileText, roles: ["student", "admin"] },
+  { to: "/courses", label: "Tài liệu & Chatbot", icon: FileText, roles: ["admin"] },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
 ];
 
