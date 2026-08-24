@@ -1,5 +1,4 @@
 import {
-  Activity,
   BookOpen,
   ChevronDown,
   Gauge,
@@ -35,6 +34,7 @@ const navigation: NavItem[] = [
   { to: "/personalized/post-exam", label: "Cải thiện sau thi", icon: Trophy, roles: ["student"] },
   { to: "/roadmap", label: "Quản lý lộ trình", icon: Map, roles: ["student"] },
   { to: "/users", label: "Người dùng", icon: Users, roles: ["admin"] },
+  { to: "/admin/subjects", label: "Quản lý môn học", icon: BookOpen, roles: ["admin"] },
 ];
 
 export function AppShell() {
@@ -122,11 +122,6 @@ export function AppShell() {
           >
             <Menu className="size-5" />
           </button>
-
-          <div className="hidden items-center gap-2 text-sm text-slate-500 lg:flex">
-            <Activity className="size-4 text-emerald-600" />
-            Workspace đang hoạt động
-          </div>
 
           <div className="relative ml-auto">
             <button

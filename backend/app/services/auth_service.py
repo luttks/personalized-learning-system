@@ -16,6 +16,13 @@ from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import RegisterRequest
 from app.schemas.user import UserCreate
+from app.services import otp_service
+from app.services.email_service import send_otp_email
+from app.services.otp_service import (
+    OtpExpiredOrMissingError,
+    OtpIncorrectError,
+    OtpTooManyAttemptsError,
+)
 from app.services.user_service import (
     create_user,
     get_user_by_email,
@@ -34,6 +41,32 @@ class InactiveUserError(Exception):
     pass
 
 
+class EmailNotVerifiedError(Exception):
+    pass
+
+
+class UserNotFoundForOtpError(Exception):
+    pass
+
+
+class EmailAlreadyVerifiedError(Exception):
+    pass
+
+
+class InvalidOtpError(Exception):
+    """Bọc chung 3 kiểu lỗi OTP (hết hạn/sai/hết lượt) thành 1 lỗi nghiệp vụ cho route xử lý."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(reason)
+
+
+async def _issue_and_send_otp(user: User) -> None:
+    code = otp_service.generate_otp_code()
+    await otp_service.store_otp(user.email, code)
+    await send_otp_email(user.email, user.full_name, code)
+
+
 async def register_student(
     session: AsyncSession,
     payload: RegisterRequest,
@@ -45,10 +78,50 @@ async def register_student(
         role="student",
     )
 
-    return await create_user(
+    user = await create_user(
         session=session,
         payload=user_payload,
     )
+    await _issue_and_send_otp(user)
+    return user
+
+
+async def resend_verification_otp(
+    session: AsyncSession,
+    email: str,
+) -> None:
+    user = await get_user_by_email(session=session, email=email)
+    if user is None:
+        raise UserNotFoundForOtpError
+    if user.email_verified:
+        raise EmailAlreadyVerifiedError
+    await _issue_and_send_otp(user)
+
+
+async def verify_email_otp(
+    session: AsyncSession,
+    email: str,
+    code: str,
+) -> User:
+    user = await get_user_by_email(session=session, email=email)
+    if user is None:
+        raise UserNotFoundForOtpError
+    if user.email_verified:
+        raise EmailAlreadyVerifiedError
+
+    try:
+        await otp_service.verify_otp(email, code)
+    except OtpExpiredOrMissingError:
+        raise InvalidOtpError("expired") from None
+    except OtpTooManyAttemptsError:
+        raise InvalidOtpError("too_many_attempts") from None
+    except OtpIncorrectError:
+        raise InvalidOtpError("incorrect") from None
+
+    user.email_verified = True
+    await session.commit()
+    await session.refresh(user)
+    return user
 
 
 async def authenticate_user(
@@ -72,6 +145,9 @@ async def authenticate_user(
 
     if not user.is_active:
         raise InactiveUserError
+
+    if not user.email_verified:
+        raise EmailNotVerifiedError
 
     return user
 

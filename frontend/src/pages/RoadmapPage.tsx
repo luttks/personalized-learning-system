@@ -77,11 +77,15 @@ export function RoadmapPage() {
           </Button>
         </div>
 
-        <RoadmapInlinePanel 
-          roadmap={selectedRoadmap.roadmap_data} 
+        <RoadmapInlinePanel
+          roadmap={selectedRoadmap.roadmap_data}
           phaseResources={phaseResources}
           subject={selectedRoadmap.title}
           goal="Hoàn thành lộ trình"
+          analysisId={selectedRoadmap.exam_analysis_id ?? undefined}
+          sourceFilename={selectedRoadmap.source_filename ?? undefined}
+          roadmapId={selectedRoadmap.id}
+          appliedAt={selectedRoadmap.applied_at}
         />
       </div>
     );

@@ -46,3 +46,9 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         default=True,
         nullable=False,
     )
+
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )

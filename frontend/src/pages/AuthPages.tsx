@@ -5,16 +5,108 @@ import {
   GraduationCap,
   LockKeyhole,
   Mail,
+  ShieldCheck,
   UserRound,
 } from "lucide-react";
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { register } from "../api/auth";
-import { getApiErrorMessage } from "../api/client";
+import { register, resendOtp, verifyEmail } from "../api/auth";
+import { getApiErrorCode, getApiErrorMessage } from "../api/client";
 import { useAuth } from "../auth/useAuth";
+import type { TokenResponse } from "../types/auth";
 import heroImage from "../assets/hero.png";
 import { Button, Field, Input, Notice } from "../components/ui";
+
+// ──────────────────────────────────────────────────────────────────────────
+// Bước nhập mã OTP (dùng chung cho Đăng ký lẫn Đăng nhập khi email chưa xác thực)
+// ──────────────────────────────────────────────────────────────────────────
+function OtpStep({
+  email,
+  onVerified,
+}: {
+  email: string;
+  onVerified: (response: TokenResponse) => void;
+}) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setInfo("");
+    setLoading(true);
+    try {
+      const response = await verifyEmail(email, code);
+      onVerified(response);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Mã OTP không hợp lệ."));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleResend() {
+    setError("");
+    setInfo("");
+    setResending(true);
+    try {
+      await resendOtp(email);
+      setInfo("Đã gửi lại mã OTP mới tới email của bạn.");
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "Không thể gửi lại mã."));
+    } finally {
+      setResending(false);
+    }
+  }
+
+  return (
+    <>
+      <p className="text-sm font-semibold text-emerald-700 flex items-center gap-1.5">
+        <ShieldCheck className="size-4" /> Xác thực email
+      </p>
+      <h2 className="mt-2 text-3xl font-bold text-slate-950">Nhập mã OTP</h2>
+      <p className="mt-2 text-sm text-slate-500">
+        Mã gồm 6 chữ số đã được gửi tới <span className="font-semibold text-slate-800">{email}</span>. Mã có hiệu lực trong 10 phút.
+      </p>
+
+      <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
+        {error && <Notice>{error}</Notice>}
+        {info && <Notice tone="success" onClose={() => setInfo("")}>{info}</Notice>}
+        <Field label="Mã xác thực">
+          <Input
+            value={code}
+            onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+            inputMode="numeric"
+            maxLength={6}
+            required
+            autoFocus
+            autoComplete="one-time-code"
+            className="text-center text-2xl font-bold tracking-[0.5em]"
+          />
+        </Field>
+        <Button className="w-full" type="submit" isLoading={loading} disabled={code.length !== 6}>
+          Xác thực <ArrowRight className="size-4" />
+        </Button>
+      </form>
+
+      <p className="mt-7 text-center text-sm text-slate-500">
+        Chưa nhận được mã?{" "}
+        <button
+          type="button"
+          onClick={() => void handleResend()}
+          disabled={resending}
+          className="font-semibold text-emerald-700 hover:text-emerald-800 disabled:opacity-50"
+        >
+          {resending ? "Đang gửi..." : "Gửi lại mã"}
+        </button>
+      </p>
+    </>
+  );
+}
 
 function AuthFrame({ children }: { children: ReactNode }) {
   return (
@@ -91,13 +183,14 @@ function PasswordInput({
 }
 
 export function LoginPage() {
-  const { signIn } = useAuth();
+  const { signIn, applySession } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [needsVerification, setNeedsVerification] = useState(false);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -108,10 +201,28 @@ export function LoginPage() {
       const destination = (location.state as { from?: { pathname?: string } })?.from?.pathname;
       navigate(destination || "/", { replace: true });
     } catch (requestError) {
-      setError(getApiErrorMessage(requestError, "Email hoặc mật khẩu không chính xác."));
+      if (getApiErrorCode(requestError) === "EMAIL_NOT_VERIFIED") {
+        setNeedsVerification(true);
+      } else {
+        setError(getApiErrorMessage(requestError, "Email hoặc mật khẩu không chính xác."));
+      }
     } finally {
       setLoading(false);
     }
+  }
+
+  if (needsVerification) {
+    return (
+      <AuthFrame>
+        <OtpStep
+          email={email}
+          onVerified={(response) => {
+            applySession(response);
+            navigate("/", { replace: true });
+          }}
+        />
+      </AuthFrame>
+    );
   }
 
   return (
@@ -154,11 +265,12 @@ export function LoginPage() {
 }
 
 export function RegisterPage() {
-  const { signIn } = useAuth();
+  const { applySession } = useAuth();
   const navigate = useNavigate();
   const [form, setForm] = useState({ full_name: "", email: "", password: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [registered, setRegistered] = useState(false);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -166,13 +278,26 @@ export function RegisterPage() {
     setLoading(true);
     try {
       await register(form);
-      await signIn({ email: form.email, password: form.password });
-      navigate("/", { replace: true });
+      setRegistered(true);
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, "Không thể tạo tài khoản."));
     } finally {
       setLoading(false);
     }
+  }
+
+  if (registered) {
+    return (
+      <AuthFrame>
+        <OtpStep
+          email={form.email}
+          onVerified={(response) => {
+            applySession(response);
+            navigate("/", { replace: true });
+          }}
+        />
+      </AuthFrame>
+    );
   }
 
   return (

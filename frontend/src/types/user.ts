@@ -8,6 +8,7 @@ export interface User {
   email: string;
   role: UserRole;
   is_active: boolean;
+  email_verified: boolean;
   created_at: string;
   updated_at: string;
   has_completed_profile: boolean;

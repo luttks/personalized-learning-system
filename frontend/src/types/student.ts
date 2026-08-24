@@ -1,7 +1,6 @@
 export interface StudentProfilePayload {
   education_level: "under_university" | "university";
   grade_level: number | null;
-  preferred_session_minutes: number;
   study_days_per_week: number;
   study_minutes_per_day: number;
 }

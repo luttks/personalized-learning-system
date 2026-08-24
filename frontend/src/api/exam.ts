@@ -12,15 +12,17 @@ const AI_REQUEST_TIMEOUT_MS = 600_000;
 
 export interface ReadingTimeEstimate {
   word_count: number;
-  survey_minutes_min: number;
-  survey_minutes_max: number;
-  general_minutes_min: number;
-  general_minutes_max: number;
-  technical_minutes_min: number;
-  technical_minutes_max: number;
-  deep_study_minutes_min: number;
-  deep_study_minutes_max: number;
+  skim_minutes_min: number;
+  skim_minutes_max: number;
+  comprehension_minutes_min: number;
+  comprehension_minutes_max: number;
+  exam_mcq_minutes_min: number;
+  exam_mcq_minutes_max: number;
+  deep_essay_minutes_min: number;
+  deep_essay_minutes_max: number;
 }
+
+export type StudyDepthMode = "skim" | "comprehension" | "exam_mcq" | "deep_essay";
 
 export interface DocumentAnalysisResult {
   is_learning_doc: boolean;
@@ -28,7 +30,6 @@ export interface DocumentAnalysisResult {
   subjects: string[];                  // Danh sách môn khi upload nhiều file
   multi_subject_detected: boolean;     // True nếu phát hiện > 1 môn
   topics: string[];
-  suggested_goals: string[];
   content_summary: string;
   is_code_related: boolean;
   raw_text: string;
@@ -132,7 +133,7 @@ export interface RoadmapDayTopic {
   activities: string;
   minutes: number;
   resource_type?: "video" | "exercise" | "reading" | "mixed";
-  location_hint?: string; // Vị trí ước lượng trong tài liệu gốc
+  location_page?: number | null; // Số trang thật do LLM lên lịch từng ngày trả về trực tiếp — vắng mặt (lộ trình cũ) hoặc null (không có nội dung trang thật để tham chiếu, VD ảnh/DOCX/TXT) đều mở về trang 1 như trước
 }
 
 export interface RoadmapDay {
@@ -162,10 +163,16 @@ export interface InlineRoadmap {
   end_date?: string; // ISO date
 }
 
+export type SubjectRelationship = "same_subject" | "related_prerequisite" | "unrelated" | "unclear";
+
 export interface CompetencyEvidenceResult {
   is_competency_evidence: boolean;
   evidence_type: "transcript" | "certificate" | "exam" | "other";
   reason: string | null;
+  evidence_subject: string | null;       // Môn/kỹ năng minh chứng ghi nhận
+  score_summary: string | null;          // Tóm tắt điểm/xếp loại
+  subject_relationship: SubjectRelationship | null;
+  relationship_reason: string | null;
 }
 
 export interface PhaseResources {
@@ -204,6 +211,7 @@ export interface ExamAnalysisDetail {
   resources: ExamResources;
   mastery_updates: MasteryUpdate[];
   roadmap: InlineRoadmap | null;
+  roadmap_id: string | null;      // id của PersonalizedRoadmap đã lưu — dùng để gọi API "Áp dụng lộ trình"
   phase_resources: Record<string, PhaseResources>;
   roadmap_error: string | null;         // Lỗi nếu sinh lộ trình thất bại
   solution_results: SolutionResult[];   // Per-question results for post_exam
@@ -241,6 +249,15 @@ export interface SubjectSummary {
   last_used: string;
 }
 
+export interface LearnerStats {
+  total_documents: number;
+  total_subjects: number;
+  total_exams: number;
+  total_roadmaps: number;
+  total_roadmaps_applied: number;
+  total_phases_passed: number;
+}
+
 // ---------------------------------------------------------------------------
 // API calls
 // ---------------------------------------------------------------------------
@@ -268,10 +285,14 @@ export async function analyzeDocument(
  * Luồng 1 — Nhóm 2: Xác thực tài liệu minh chứng năng lực (bảng điểm/chứng chỉ/bài kiểm tra)
  */
 export async function analyzeCompetencyEvidence(
-  file: File
+  file: File,
+  subject?: string,
+  topics?: string[]
 ): Promise<CompetencyEvidenceResult> {
   const formData = new FormData();
   formData.append("file", file);
+  if (subject) formData.append("subject", subject);
+  if (topics && topics.length) formData.append("topics", JSON.stringify(topics));
 
   const response = await apiClient.post<CompetencyEvidenceResult>(
     "/learners/me/exams/analyze-competency-evidence",
@@ -336,7 +357,10 @@ export async function submitExam(
     startDate?: string;
     minutesPerDay?: number;
     daysPerWeek?: number;
+    schedulePattern?: "consecutive" | "interleaved";
     evidenceType?: string;
+    evidenceContext?: string;
+    studyDepthMode?: StudyDepthMode;
     readingTimeHint?: string;
     // Dùng lại file đã lưu tạm ở bước phân tích tài liệu thay vì upload lại (file có thể là null nếu dùng cách này)
     tempFileId?: string;
@@ -363,8 +387,11 @@ export async function submitExam(
   if (options.tempFileId) formData.append("temp_file_id", options.tempFileId);
   if (options.minutesPerDay !== undefined) formData.append("minutes_per_day", String(options.minutesPerDay));
   if (options.daysPerWeek !== undefined) formData.append("days_per_week", String(options.daysPerWeek));
+  if (options.schedulePattern) formData.append("schedule_pattern", options.schedulePattern);
   if (options.readingTimeHint) formData.append("reading_time_hint", options.readingTimeHint);
   if (options.evidenceType) formData.append("evidence_type", options.evidenceType);
+  if (options.evidenceContext) formData.append("evidence_context", options.evidenceContext);
+  if (options.studyDepthMode) formData.append("study_depth_mode", options.studyDepthMode);
   if (options.examScore !== undefined) formData.append("exam_score", options.examScore);
   if (options.examMaxScore !== undefined) formData.append("exam_max_score", options.examMaxScore);
   if (options.selectedQuestions) formData.append("selected_questions", options.selectedQuestions);
@@ -382,7 +409,42 @@ export async function submitExam(
 export const uploadExam = (file: File, opts: Parameters<typeof submitExam>[1]) =>
   submitExam(file, opts);
 
+export interface SuggestGoalsEvidenceContext {
+  evidence_type: string;
+  evidence_subject?: string | null;
+  score_summary?: string | null;
+  subject_relationship?: string | null;
+  relationship_reason?: string | null;
+}
+
+export interface SuggestGoalsRequest {
+  subject: string;
+  topics: string[];
+  content_summary: string;
+  curriculum_position?: { topic: string; on_track: boolean };
+  evidence_context?: SuggestGoalsEvidenceContext;
+  study_depth_mode: StudyDepthMode;
+}
+
+/**
+ * Luồng 1 — Sinh gợi ý mục tiêu SAU KHI đã biết đủ thông tin Bước 2 (vị trí chương trình, minh
+ * chứng năng lực, mức độ học tập) — không còn sinh sớm lúc phân tích tài liệu.
+ */
+export async function suggestGoals(payload: SuggestGoalsRequest): Promise<{ suggested_goals: string[] }> {
+  const response = await apiClient.post<{ suggested_goals: string[] }>(
+    "/learners/me/exams/suggest-goals",
+    payload,
+    { timeout: 30_000 }
+  );
+  return response.data;
+}
+
 /** Lấy danh sách môn học / đề thi đã làm theo mode */
+export async function getLearnerStats(): Promise<LearnerStats> {
+  const response = await apiClient.get<LearnerStats>("/learners/me/exams/stats");
+  return response.data;
+}
+
 export async function listSubjects(mode: "onboarding" | "post_exam" = "onboarding"): Promise<SubjectSummary[]> {
   const response = await apiClient.get<SubjectSummary[]>("/learners/me/exams/subjects", {
     params: { mode },

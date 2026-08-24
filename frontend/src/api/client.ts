@@ -130,3 +130,10 @@ export function getApiErrorMessage(
   }
   return fallback;
 }
+
+/** Lấy mã lỗi máy-đọc-được (VD "EMAIL_NOT_VERIFIED") khi backend trả detail dạng {code, message}. */
+export function getApiErrorCode(error: unknown): string | undefined {
+  if (!axios.isAxiosError(error)) return undefined;
+  const detail = error.response?.data?.detail as { code?: string } | undefined;
+  return detail?.code;
+}

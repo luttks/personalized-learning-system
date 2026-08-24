@@ -24,7 +24,6 @@ import type { StudentProfilePayload } from "../types/student";
 const initialProfile: StudentProfilePayload = {
   education_level: "under_university",
   grade_level: 10,
-  preferred_session_minutes: 30,
   study_days_per_week: 4,
   study_minutes_per_day: 45,
 };
@@ -101,7 +100,7 @@ export function StudentProfilePage() {
             <UserRound className="size-5 text-emerald-700" />
             <h2 className="text-lg font-bold text-slate-900">Thông tin cơ bản</h2>
           </div>
-          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-5 sm:grid-cols-2">
             <Field label="Trình độ học vấn">
               <Select
                 value={form.education_level}
@@ -115,7 +114,7 @@ export function StudentProfilePage() {
                   }
                 }}
               >
-                <option value="under_university">Dưới đại học (Cấp 1-12)</option>
+                <option value="under_university">Phổ thông</option>
                 <option value="university">Đại học</option>
               </Select>
             </Field>
@@ -147,14 +146,7 @@ export function StudentProfilePage() {
 
         <section className="border-t border-slate-200 pt-7">
           <h2 className="mb-4 text-lg font-bold text-slate-900">Lịch học</h2>
-          <div className="grid gap-5 sm:grid-cols-3">
-            <Field label="Thời lượng mỗi phiên (phút)">
-              <Input
-                type="number" min={10} max={180}
-                value={form.preferred_session_minutes}
-                onChange={(event) => update("preferred_session_minutes", Number(event.target.value))}
-              />
-            </Field>
+          <div className="grid gap-5 sm:grid-cols-2">
             <Field label="Số ngày mỗi tuần">
               <Input
                 type="number" min={1} max={7}

@@ -42,13 +42,6 @@ class StudentProfile(
         ),
         CheckConstraint(
             (
-                "preferred_session_minutes >= 10 "
-                "AND preferred_session_minutes <= 180"
-            ),
-            name="session_minutes_range",
-        ),
-        CheckConstraint(
-            (
                 "study_days_per_week >= 1 "
                 "AND study_days_per_week <= 7"
             ),
@@ -88,12 +81,6 @@ class StudentProfile(
 
     grade_level: Mapped[int] = mapped_column(
         Integer,
-        nullable=False,
-    )
-
-    preferred_session_minutes: Mapped[int] = mapped_column(
-        Integer,
-        default=30,
         nullable=False,
     )
 

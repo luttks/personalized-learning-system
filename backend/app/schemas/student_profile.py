@@ -19,12 +19,6 @@ class StudentProfileBase(BaseModel):
         le=12,
     )
 
-    preferred_session_minutes: int = Field(
-        default=30,
-        ge=10,
-        le=180,
-    )
-
     study_days_per_week: int = Field(
         default=4,
         ge=1,
@@ -57,12 +51,6 @@ class StudentProfileUpdate(BaseModel):
         default=None,
         ge=1,
         le=12,
-    )
-
-    preferred_session_minutes: int | None = Field(
-        default=None,
-        ge=10,
-        le=180,
     )
 
     study_days_per_week: int | None = Field(

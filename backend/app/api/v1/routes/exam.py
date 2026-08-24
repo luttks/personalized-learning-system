@@ -32,11 +32,12 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_student
+from app.api.dependencies.rate_limit import rate_limit_by_user
 from app.core.config import settings
 from app.db.session import get_db_session
-from app.models.content import Course, CourseStatus
 from app.models.exam_analysis_model import ExamAnalysis
 from app.models.personalized_roadmap import PersonalizedRoadmap
+from app.models.phase_assessment import PhaseAssessment
 from app.models.user import User
 from app.services.exam_service import (
     ALL_SUPPORTED_EXTS,
@@ -52,12 +53,16 @@ from app.services.exam_service import (
     crawl_solution_for_question,
     generate_solution_hint,
     save_upload_file,
+    suggest_learning_goals,
+    STUDY_DEPTH_MODES,
+    verify_file_signature,
 )
 from app.services.learner_service import (
     ensure_learner_profile,
     get_learner_profile,
     record_learning_event,
 )
+from app.services.phase_assessment_service import create_pending_assessments_for_roadmap
 from app.services.student_profile_service import get_student_profile
 from app.services.temp_upload_service import (
     discard_temp_file,
@@ -65,6 +70,7 @@ from app.services.temp_upload_service import (
     save_temp_file,
 )
 from app.schemas.learner import LearningEventRequest
+from app.worker.tasks import generate_phase_assessment_task, index_exam_analysis_chunks_task
 
 logger = logging.getLogger(__name__)
 
@@ -79,16 +85,17 @@ DatabaseSession = Annotated[AsyncSession, Depends(get_db_session)]
 # ---------------------------------------------------------------------------
 
 class ReadingTimeEstimate(BaseModel):
-    """Ước lượng thời gian đọc tài liệu — tính bằng code (đếm từ), KHÔNG dùng LLM, chưa cá nhân hóa."""
+    """Ước lượng thời gian đọc tài liệu — tính bằng code (đếm âm tiết), KHÔNG dùng LLM, chưa cá
+    nhân hóa. 4 mức tương ứng 1:1 với 4 lựa chọn "study_depth_mode" người dùng chọn ở Bước 2."""
     word_count: int
-    survey_minutes_min: int
-    survey_minutes_max: int
-    general_minutes_min: int
-    general_minutes_max: int
-    technical_minutes_min: int
-    technical_minutes_max: int
-    deep_study_minutes_min: int
-    deep_study_minutes_max: int
+    skim_minutes_min: int
+    skim_minutes_max: int
+    comprehension_minutes_min: int
+    comprehension_minutes_max: int
+    exam_mcq_minutes_min: int
+    exam_mcq_minutes_max: int
+    deep_essay_minutes_min: int
+    deep_essay_minutes_max: int
 
 
 class DocumentAnalysisResponse(BaseModel):
@@ -98,7 +105,6 @@ class DocumentAnalysisResponse(BaseModel):
     subjects: list[str] = []              # Danh sách môn khi upload nhiều file
     multi_subject_detected: bool = False  # True nếu phát hiện > 1 môn khác nhau
     topics: list[str]
-    suggested_goals: list[str]
     content_summary: str
     is_code_related: bool
     raw_text: str  # Dùng cho bước sinh quiz
@@ -126,6 +132,25 @@ class CompetencyEvidenceResponse(BaseModel):
     is_competency_evidence: bool
     evidence_type: str  # "transcript" | "certificate" | "exam" | "other"
     reason: str | None = None
+    evidence_subject: str | None = None  # Môn/kỹ năng minh chứng ghi nhận
+    score_summary: str | None = None  # Tóm tắt điểm/xếp loại
+    subject_relationship: str | None = None  # same_subject|related_prerequisite|unrelated|unclear
+    relationship_reason: str | None = None
+
+
+class SuggestGoalsRequest(BaseModel):
+    """Sinh gợi ý mục tiêu SAU KHI đã biết đủ thông tin Bước 2 (vị trí chương trình, minh chứng
+    năng lực, mức độ học tập) — không còn sinh sớm lúc phân tích tài liệu."""
+    subject: str
+    topics: list[str] = []
+    content_summary: str = ""
+    curriculum_position: dict[str, Any] | None = None  # {"topic": str, "on_track": bool}
+    evidence_context: dict[str, Any] | None = None
+    study_depth_mode: str  # "skim"|"comprehension"|"exam_mcq"|"deep_essay" — bắt buộc
+
+
+class SuggestGoalsResponse(BaseModel):
+    suggested_goals: list[str]
 
 
 class QuizGenerateRequest(BaseModel):
@@ -182,6 +207,7 @@ class ExamAnalysisDetail(BaseModel):
     resources: dict[str, Any]
     mastery_updates: list[dict[str, Any]]
     roadmap: dict[str, Any] = {}
+    roadmap_id: str | None = None  # id của PersonalizedRoadmap đã lưu — dùng để gọi API "Áp dụng lộ trình"
     phase_resources: dict[str, Any] = {}
     roadmap_error: str | None = None  # Ghi nhận lỗi nếu sinh lộ trình thất bại
     # Post-exam: kết quả theo từng phương án
@@ -197,6 +223,15 @@ class SubjectSummary(BaseModel):
     last_used: datetime
 
 
+class LearnerStatsResponse(BaseModel):
+    total_documents: int
+    total_subjects: int
+    total_exams: int
+    total_roadmaps: int
+    total_roadmaps_applied: int
+    total_phases_passed: int
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -210,6 +245,27 @@ def _extract_topics_from_recommendation(ai_rec: dict) -> list[tuple[str, str]]:
             if topic:
                 topics.append((topic, group_key))
     return topics
+
+
+def _quiz_score_ratio(quiz_results: list[dict]) -> float | None:
+    """Tỷ lệ điểm CÓ TRỌNG SỐ theo độ khó cho quick quiz onboarding — câu khó đúng có giá trị cao
+    hơn câu dễ đúng (nguyên lý item difficulty trong Classical Test Theory), thay vì đếm số câu
+    đúng thô. Đây là nguồn score_ratio DUY NHẤT cho mode="onboarding": trước đây score_ratio chỉ
+    được tính từ exam_score/exam_max_score (chỉ có ở mode="post_exam"), nên ở luồng onboarding —
+    dù đã có 7 câu quiz chấm điểm thật — score_ratio luôn None, khiến level_hint trong prompt sinh
+    lộ trình luôn rơi về câu chung chung "Học sinh mới bắt đầu tiếp cận môn học." bất kể làm quiz
+    tốt hay tệ (vi phạm nguyên lý đánh giá chẩn đoán phải feed-forward — xem Black & Wiliam 1998,
+    trích dẫn ở generate_diagnostic_quiz trong exam_service.py)."""
+    if not quiz_results:
+        return None
+    weight = {"easy": 1.0, "medium": 1.5, "hard": 2.0}
+    total = earned = 0.0
+    for qr in quiz_results:
+        w = weight.get(qr.get("difficulty", "medium"), 1.5)
+        total += w
+        if qr.get("correct"):
+            earned += w
+    return earned / total if total > 0 else None
 
 
 def _mastery_for_group(group_key: str, score_ratio: float | None) -> dict:
@@ -314,6 +370,7 @@ async def _check_existing_mastery(session: AsyncSession, learner_id, subject: st
     "/analyze-document",
     response_model=DocumentAnalysisResponse,
     summary="[Luồng 1] Phân tích tài liệu: detect môn học + gợi ý mục tiêu (hỗ trợ nhiều file)",
+    dependencies=[Depends(rate_limit_by_user("analyze_document", max_requests=6, window_seconds=60))],
 )
 async def analyze_document(
     current_user: CurrentStudent,
@@ -344,6 +401,11 @@ async def analyze_document(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"File '{filename}' rỗng.")
         if len(file_bytes) > 100 * 1024 * 1024:
             raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail=f"File '{filename}' quá lớn (tối đa 100MB).")
+        if not verify_file_signature(file_bytes, ext):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Nội dung file '{filename}' không khớp với định dạng '{ext}' đã chọn.",
+            )
         # Tính SHA-256 hash của file để kiểm tra trùng lập
         import hashlib
         file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -370,7 +432,6 @@ async def analyze_document(
             subject = result.get("subject", "Tài liệu học tập")
             raw_text = result.get("raw_text", "")
             topics = result.get("topics", [])
-            suggested_goals = result.get("suggested_goals", [])
             content_summary = result.get("content_summary", "")
             is_code_related = result.get("is_code_related", False)
             ocr_engine = result.get("ocr_engine", "")
@@ -394,7 +455,6 @@ async def analyze_document(
             multi_subject_detected = merged["multi_subject_detected"]
             raw_text = merged["merged_raw_text"]
             topics = merged["merged_topics"]
-            suggested_goals = merged["merged_goals"]
             content_summary = f"Đã phân tích {len(all_file_data)} tài liệu: {', '.join(subjects)}"
             is_code_related = merged["is_code_related"]
             ocr_engine = merged["ocr_engine"]
@@ -456,7 +516,6 @@ async def analyze_document(
         subjects=subjects,
         multi_subject_detected=multi_subject_detected,
         topics=topics,
-        suggested_goals=suggested_goals,
         content_summary=content_summary,
         is_code_related=is_code_related,
         raw_text=raw_text,
@@ -486,11 +545,21 @@ async def analyze_document(
     "/analyze-competency-evidence",
     response_model=CompetencyEvidenceResponse,
     summary="[Luồng 1] Xác thực tài liệu minh chứng năng lực do người dùng upload",
+    dependencies=[Depends(rate_limit_by_user("analyze_competency", max_requests=6, window_seconds=60))],
 )
 async def analyze_competency_evidence_route(
     current_user: CurrentStudent,
     file: Annotated[UploadFile, File(description="Bảng điểm / chứng chỉ / bài kiểm tra đã làm")],
+    subject: Annotated[str | None, Form(description="Môn học đang xây lộ trình (từ analyze-document)")] = None,
+    topics: Annotated[str | None, Form(description="JSON list mục lục môn mục tiêu — ngữ cảnh phụ")] = None,
 ) -> CompetencyEvidenceResponse:
+    topics_parsed: list[str] | None = None
+    if topics:
+        try:
+            topics_parsed = [str(t) for t in json.loads(topics) if str(t).strip()]
+        except Exception:
+            topics_parsed = None
+
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALL_SUPPORTED_EXTS:
@@ -503,6 +572,11 @@ async def analyze_competency_evidence_route(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
     if len(file_bytes) > 100 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="File quá lớn (tối đa 100MB).")
+    if not verify_file_signature(file_bytes, ext):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Nội dung file không khớp với định dạng '{ext}' đã chọn.",
+        )
 
     try:
         result = await analyze_competency_evidence(
@@ -512,6 +586,8 @@ async def analyze_competency_evidence_route(
             llm_api_keys=settings.llm_api_keys,
             llm_base_url=settings.llm_base_url,
             llm_model=settings.llm_model,
+            target_subject=subject or None,
+            target_topics=topics_parsed,
         )
     except Exception as e:
         logger.error(f"Competency evidence analysis error: {e}")
@@ -521,7 +597,42 @@ async def analyze_competency_evidence_route(
         is_competency_evidence=result["is_competency_evidence"],
         evidence_type=result["evidence_type"],
         reason=result["reason"],
+        evidence_subject=result.get("evidence_subject"),
+        score_summary=result.get("score_summary"),
+        subject_relationship=result.get("subject_relationship"),
+        relationship_reason=result.get("relationship_reason"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Luồng 1 — làm mới gợi ý mục tiêu sau khi có thêm vị trí chương trình / minh chứng năng lực
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/suggest-goals",
+    response_model=SuggestGoalsResponse,
+    summary="[Luồng 1] Làm mới gợi ý mục tiêu sau khi có thêm minh chứng/vị trí chương trình",
+    dependencies=[Depends(rate_limit_by_user("suggest_goals", max_requests=10, window_seconds=60))],
+)
+async def suggest_goals_route(
+    current_user: CurrentStudent,
+    payload: SuggestGoalsRequest,
+) -> SuggestGoalsResponse:
+    if payload.study_depth_mode not in STUDY_DEPTH_MODES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="study_depth_mode không hợp lệ.")
+    goals = await suggest_learning_goals(
+        subject=payload.subject,
+        topics=payload.topics,
+        content_summary=payload.content_summary,
+        curriculum_position=payload.curriculum_position,
+        evidence_context=payload.evidence_context,
+        study_depth_mode=payload.study_depth_mode,
+        gemini_api_keys=settings.gemini_api_keys,
+        llm_api_keys=settings.llm_api_keys,
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model,
+    )
+    return SuggestGoalsResponse(suggested_goals=goals)
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +643,7 @@ async def analyze_competency_evidence_route(
     "/generate-quiz",
     response_model=QuizGenerateResponse,
     summary="[Luồng 1] Sinh câu hỏi diagnostic bám sát nội dung tài liệu",
+    dependencies=[Depends(rate_limit_by_user("generate_quiz", max_requests=10, window_seconds=60))],
 )
 async def generate_quiz(
     _: CurrentStudent,
@@ -564,6 +676,7 @@ async def generate_quiz(
         document_text=payload.document_text,
         selected_goal=payload.selected_goal,
         user_level_info=user_level_info,
+        num_questions=payload.num_questions,
         gemini_api_keys=settings.gemini_api_keys,
         llm_api_keys=settings.llm_api_keys,
         llm_base_url=settings.llm_base_url,
@@ -591,6 +704,7 @@ async def generate_quiz(
     "/parse-exam",
     response_model=ParseExamResponse,
     summary="[Luồng 2] Parse đề thi, lấy danh sách câu hỏi và đoạn văn (header)",
+    dependencies=[Depends(rate_limit_by_user("parse_exam", max_requests=6, window_seconds=60))],
 )
 async def parse_exam(
     current_user: CurrentStudent,
@@ -610,6 +724,11 @@ async def parse_exam(
     file_bytes = await file.read()
     if not file_bytes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
+    if not verify_file_signature(file_bytes, ext):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Nội dung file không khớp với định dạng '{ext}' đã chọn.",
+        )
 
     try:
         from app.services.exam_service import ocr_and_parse
@@ -638,6 +757,7 @@ async def parse_exam(
     response_model=ExamAnalysisDetail,
     status_code=status.HTTP_201_CREATED,
     summary="Upload và phân tích bài thi / nộp kết quả onboarding",
+    dependencies=[Depends(rate_limit_by_user("submit_exam", max_requests=10, window_seconds=60))],
 )
 async def submit_exam(
     current_user: CurrentStudent,
@@ -654,10 +774,13 @@ async def submit_exam(
     curriculum_position: Annotated[str | None, Form()] = None,  # JSON: {"topic": str, "on_track": bool}
     topics: Annotated[str | None, Form()] = None,  # JSON: toàn bộ mục lục tài liệu theo đúng thứ tự
     deadline: Annotated[str | None, Form()] = None,  # ISO date YYYY-MM-DD
-    start_date: Annotated[str | None, Form()] = None,  # ISO date YYYY-MM-DD — mặc định hôm nay
+    start_date: Annotated[str | None, Form()] = None,  # ISO date YYYY-MM-DD — mặc định ngày mai
     minutes_per_day: Annotated[str | None, Form()] = None,
     days_per_week: Annotated[str | None, Form()] = None,
+    schedule_pattern: Annotated[str | None, Form()] = None,  # "consecutive"|"interleaved"
     evidence_type: Annotated[str | None, Form()] = None,  # "transcript"|"certificate"|"exam"|"other"
+    evidence_context: Annotated[str | None, Form()] = None,  # JSON: evidence_subject/score_summary/subject_relationship/relationship_reason
+    study_depth_mode: Annotated[str | None, Form()] = None,  # "skim"|"comprehension"|"exam_mcq"|"deep_essay" — bắt buộc khi mode="onboarding"
     reading_time_hint: Annotated[str | None, Form()] = None,  # JSON: kết quả estimate_reading_time() từ bước phân tích
     temp_file_id: Annotated[str | None, Form()] = None,  # Dùng lại file đã lưu tạm ở bước phân tích, khỏi phải upload lại
     # Luồng 2 fields
@@ -695,6 +818,12 @@ async def submit_exam(
     if file and not file_bytes:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File rỗng.")
 
+    if file_bytes and not verify_file_signature(file_bytes, ext):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Nội dung file không khớp với định dạng '{ext}' đã chọn.",
+        )
+
     # Parse numeric fields
     score: float | None = None
     max_score: float | None = None
@@ -704,6 +833,13 @@ async def submit_exam(
             score = float(exam_score)
         if exam_max_score and exam_max_score.strip():
             max_score = float(exam_max_score)
+        # Điểm số là minh chứng năng lực tự khai — bỏ qua nếu phi lý (âm, thang điểm <= 0,
+        # hoặc điểm vượt thang điểm) thay vì lưu lại số liệu sai lệch vào hồ sơ năng lực.
+        if score is not None and (score < 0 or (max_score is not None and score > max_score)):
+            score = None
+        if max_score is not None and max_score <= 0:
+            max_score = None
+            score = None
         if score is not None and max_score and max_score > 0:
             score_ratio = score / max_score
     except ValueError:
@@ -718,6 +854,13 @@ async def submit_exam(
             quiz_results_parsed = json.loads(quick_quiz_results)
         except Exception:
             pass
+
+    # score_ratio chỉ tính được từ exam_score/exam_max_score ở mode="post_exam" — với
+    # mode="onboarding" dùng luôn kết quả quick quiz đã có (đã chấm điểm thật) làm nguồn score_ratio
+    # thay vì bỏ trống, để level_hint trong prompt sinh lộ trình phản ánh ĐÚNG năng lực đo được
+    # (xem _quiz_score_ratio).
+    if mode == "onboarding" and score_ratio is None and quiz_results_parsed:
+        score_ratio = _quiz_score_ratio(quiz_results_parsed)
 
     # Parse vị trí hiện tại trong chương trình (chỉ 1 điểm mốc + có bị hổng hay không)
     curriculum_position_parsed: dict | None = None
@@ -738,6 +881,18 @@ async def submit_exam(
             deadline_date = date.fromisoformat(deadline.strip())
         except Exception:
             pass
+        else:
+            if deadline_date < date.today():
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Hạn mục tiêu không được ở trong quá khứ. Vui lòng chọn lại ngày.",
+                )
+
+    if mode == "onboarding" and study_depth_mode not in STUDY_DEPTH_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Vui lòng chọn mức độ học tập (Mức độ học tập bạn hướng tới).",
+        )
 
     minutes_per_day_parsed = 60
     if minutes_per_day:
@@ -753,6 +908,8 @@ async def submit_exam(
         except Exception:
             pass
 
+    schedule_pattern_parsed = schedule_pattern if schedule_pattern in ("consecutive", "interleaved") else "consecutive"
+
     # Toàn bộ mục lục tài liệu (theo thứ tự) — dùng để tách phần đã học / cần học
     topics_parsed: list[str] = []
     if topics:
@@ -767,6 +924,18 @@ async def submit_exam(
     if reading_time_hint:
         try:
             reading_time_parsed = json.loads(reading_time_hint)
+        except Exception:
+            pass
+
+    # Ngữ cảnh minh chứng năng lực (evidence_subject/score_summary/subject_relationship) đã trích
+    # xuất ở bước /analyze-competency-evidence — chỉ mang tính mô tả cho prompt sinh lộ trình nên
+    # parse fail-open, không chặn nộp bài nếu lỗi định dạng.
+    evidence_context_parsed: dict | None = None
+    if evidence_context:
+        try:
+            parsed_evidence_ctx = json.loads(evidence_context)
+            if isinstance(parsed_evidence_ctx, dict):
+                evidence_context_parsed = parsed_evidence_ctx
         except Exception:
             pass
 
@@ -804,6 +973,10 @@ async def submit_exam(
     # OCR + parse file (Luồng 1) hoặc parse từ raw_text (Luồng 2)
     parsed = {}
     resources = {}
+    # Nội dung tài liệu theo trang (1-indexed, giữ ranh giới trang) — CHỈ có ở Luồng 1 (có file thật);
+    # dùng để lên lịch từng ngày dựa trên nội dung THẬT thay vì chỉ tên chủ đề, xem
+    # generate_learning_roadmap/_schedule_phase_days_llm. None ở Luồng 2 (post_exam, không có file).
+    page_texts: list[tuple[int, int, str]] | None = None
     if mode == "onboarding":
         try:
             result = await run_full_exam_pipeline(
@@ -814,6 +987,7 @@ async def submit_exam(
             parsed = result["parsed"]
             resources = result.get("resources", {})
             code_related = code_related or result.get("is_code_related", False)
+            page_texts = result.get("page_texts")
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)) from e
         except RuntimeError as e:
@@ -975,6 +1149,31 @@ async def submit_exam(
     phase_resources: dict = {}
     roadmap_error: str | None = None
 
+    # Build chuỗi mô tả minh chứng năng lực GIÀU THÔNG TIN hơn để đưa vào prompt sinh lộ trình —
+    # trước đây chỉ truyền bare evidence_type (VD "transcript"), gần như không có giá trị tham
+    # khảo. Giờ kèm luôn môn ghi nhận, kết quả, và quan hệ với môn mục tiêu (cùng môn/tiên quyết/
+    # không liên quan) để LLM hiểu đúng ý nghĩa minh chứng thay vì chỉ biết loại giấy tờ.
+    evidence_summary_str: str | None = None
+    if evidence_type:
+        type_label = {
+            "transcript": "Bảng điểm", "certificate": "Chứng chỉ", "exam": "Bài kiểm tra đã làm",
+        }.get(evidence_type, "Minh chứng năng lực")
+        parts = [type_label]
+        if evidence_context_parsed and evidence_context_parsed.get("evidence_subject"):
+            parts.append(f"cho môn '{evidence_context_parsed['evidence_subject']}'")
+        if evidence_context_parsed and evidence_context_parsed.get("score_summary"):
+            parts.append(f"— kết quả: {evidence_context_parsed['score_summary']}")
+        relation_label = {
+            "same_subject": "CÙNG môn đang xây lộ trình (phản ánh trực tiếp năng lực hiện tại ở môn này)",
+            "related_prerequisite": "môn TIÊN QUYẾT/LIÊN QUAN đến môn đang xây lộ trình (tín hiệu gián tiếp về năng lực nền)",
+            "unrelated": "môn KHÔNG liên quan trực tiếp đến môn đang xây lộ trình",
+        }.get((evidence_context_parsed or {}).get("subject_relationship"))
+        if relation_label:
+            parts.append(f"({relation_label})")
+        if evidence_context_parsed and evidence_context_parsed.get("relationship_reason"):
+            parts.append(f"— {evidence_context_parsed['relationship_reason']}")
+        evidence_summary_str = " ".join(parts)
+
     if should_generate_roadmap:
         if not settings.llm_model or not settings.llm_api_key:
             roadmap_error = "LLM chưa được cấu hình — không thể sinh lộ trình học tập."
@@ -989,12 +1188,15 @@ async def submit_exam(
                     score_ratio=score_ratio,
                     minutes_per_day=minutes_per_day_parsed,
                     days_per_week=days_per_week_parsed,
+                    schedule_pattern=schedule_pattern_parsed,
                     quick_quiz_results_str=quick_quiz_results,
-                    evidence_summary=evidence_type,
+                    evidence_summary=evidence_summary_str,
                     curriculum_position=curriculum_position_parsed,
                     deadline=deadline,
                     start_date=start_date,
                     reading_time=reading_time_parsed,
+                    study_depth_mode=study_depth_mode,
+                    page_texts=page_texts,
                     gemini_api_keys=settings.gemini_api_keys,
                     llm_api_keys=settings.llm_api_keys,
                     llm_base_url=settings.llm_base_url,
@@ -1092,37 +1294,13 @@ async def submit_exam(
     if file_bytes:
         computed_file_hash = _hashlib.sha256(file_bytes).hexdigest()
 
-    # Gắn với Course thay vì lưu subject dạng chuỗi tự do rời rạc — tìm course nháp đã có
-    # của chính người dùng theo tên môn (không phân biệt hoa/thường), nếu chưa có thì tạo mới.
     resolved_subject = subject or (ai_rec.get("_goal", "") if ai_rec else None)
-    course_id: UUID | None = None
-    if resolved_subject:
-        existing_course = (
-            await session.execute(
-                select(Course).where(
-                    Course.owner_id == current_user.id,
-                    func.lower(Course.subject) == resolved_subject.strip().lower(),
-                )
-            )
-        ).scalars().first()
-        if existing_course is None:
-            existing_course = Course(
-                owner_id=current_user.id,
-                title=resolved_subject.strip(),
-                subject=resolved_subject.strip(),
-                grade_level=12,  # placeholder cho môn học tổng quát (không phải K-12 cụ thể)
-                status=CourseStatus.DRAFT.value,
-            )
-            session.add(existing_course)
-            await session.flush()
-        course_id = existing_course.id
 
     # Lưu DB
     analysis = ExamAnalysis(
         learner_id=learner.id,
         filename=filename,
         subject=resolved_subject,
-        course_id=course_id,
         file_path=file_path,
         file_hash=computed_file_hash,
         ocr_engine=parsed.get("ocr_engine", "unknown"),
@@ -1143,6 +1321,7 @@ async def submit_exam(
             "_deadline": deadline,
             "_minutes_per_day": minutes_per_day_parsed,
             "_evidence_type": evidence_type,
+            "_evidence_context": evidence_context_parsed,
             "_quiz_summary": (
                 {
                     "correct": sum(1 for q in quiz_results_parsed if q.get("correct")),
@@ -1160,7 +1339,11 @@ async def submit_exam(
     await session.commit()
     await session.refresh(analysis)
 
+    if analysis.raw_markdown and analysis.raw_markdown.strip():
+        index_exam_analysis_chunks_task.delay(str(analysis.id))
+
     # Save Roadmap to new table if generated
+    roadmap_id: str | None = None
     if inline_roadmap:
         phases_with_resources = inline_roadmap.get("phases", [])
         for p in phases_with_resources:
@@ -1173,11 +1356,41 @@ async def submit_exam(
             title=subject or "Học tập tổng quát",
             overview=inline_roadmap.get("overview", ""),
             total_weeks=inline_roadmap.get("total_weeks", 0),
-            roadmap_data={"phases": phases_with_resources},
+            roadmap_data={
+                "phases": phases_with_resources,
+                # Snapshot các tham số dùng để sinh lộ trình — CẦN THIẾT để xếp lại lịch sau này
+                # (VD sau khi rớt bài kiểm tra giai đoạn, xem apply_phase_remediation trong
+                # exam_service.py) mà không cần LearnerProfile: minutes_per_day/days_per_week ở đó
+                # là cột chết (chưa từng được ghi), deadline chỉ ghi ở luồng onboarding.
+                "_schedule_meta": {
+                    "minutes_per_day": minutes_per_day_parsed,
+                    "days_per_week": days_per_week_parsed,
+                    "schedule_pattern": schedule_pattern_parsed,
+                    "deadline": deadline,
+                    "study_depth_mode": study_depth_mode,
+                    "reading_time": reading_time_parsed,
+                    "selected_goal": goal_for_roadmap,
+                },
+            },
             created_at=datetime.now(UTC),
         )
         session.add(roadmap_record)
         await session.commit()
+        roadmap_id = str(roadmap_record.id)
+
+        # Sinh bài kiểm tra cuối mỗi giai đoạn NGẦM qua Celery — chỉ ghi DB (rẻ) ở đây rồi trả
+        # response ngay; việc gọi LLM để ra câu hỏi diễn ra hoàn toàn trong tiến trình worker
+        # riêng, sau khi request này đã trả về, nên KHÔNG làm chậm/ảnh hưởng việc tạo lộ trình.
+        if phases_with_resources:
+            try:
+                phase_assessments = await create_pending_assessments_for_roadmap(
+                    session, roadmap_record, phases_with_resources
+                )
+                await session.commit()
+                for phase_assessment in phase_assessments:
+                    generate_phase_assessment_task.delay(str(phase_assessment.id))
+            except Exception as e:
+                logger.warning(f"Không thể khởi tạo bài kiểm tra cuối giai đoạn: {e}")
 
     return ExamAnalysisDetail(
         id=str(analysis.id),
@@ -1195,6 +1408,7 @@ async def submit_exam(
         resources=analysis.resources_json,
         mastery_updates=analysis.mastery_updates_json,
         roadmap=inline_roadmap,
+        roadmap_id=roadmap_id,
         phase_resources=phase_resources,
         roadmap_error=roadmap_error,
         solution_results=solution_results,
@@ -1232,12 +1446,63 @@ async def list_subjects(
         if a_mode != mode:
             continue
         subj = a.subject or a.ai_recommendation_json.get("_goal", "Không xác định") or "Không xác định"
-        key = subj
+        key = subj.strip().lower()
         if key not in subject_map:
             subject_map[key] = {"subject": subj, "mode": mode, "count": 0, "last_used": a.created_at}
         subject_map[key]["count"] += 1
 
     return [SubjectSummary(**v) for v in subject_map.values()]
+
+
+@router.get("/stats", response_model=LearnerStatsResponse)
+async def get_learner_stats(
+    current_user: CurrentStudent,
+    session: DatabaseSession,
+) -> LearnerStatsResponse:
+    """Số liệu tổng quan cho trang Tổng quan (Dashboard) — gộp từ 2 domain riêng biệt (tài liệu/đề
+    thi, lộ trình) nên đặt ở đây thay vì rải vào từng router con. `mode` nằm trong JSON
+    (ai_recommendation_json["_mode"]) chứ không phải cột riêng — theo đúng quy ước xử lý ở Python
+    (không query JSON path trong SQL) đã dùng ở list_subjects/list_exam_analyses phía trên, để nhất
+    quán và tránh phụ thuộc cú pháp JSON riêng của Postgres."""
+    learner = await get_learner_profile(session, current_user.id)
+    if not learner:
+        return LearnerStatsResponse(
+            total_documents=0, total_subjects=0, total_exams=0, total_roadmaps=0,
+            total_roadmaps_applied=0, total_phases_passed=0,
+        )
+
+    analyses = (await session.execute(
+        select(ExamAnalysis.subject, ExamAnalysis.ai_recommendation_json)
+        .where(ExamAnalysis.learner_id == learner.id)
+    )).all()
+    total_documents = len(analyses)
+    subjects = {a.subject.strip().lower() for a in analyses if a.subject}
+    total_exams = sum(
+        1 for a in analyses if (a.ai_recommendation_json or {}).get("_mode") == "post_exam"
+    )
+
+    total_roadmaps = await session.scalar(
+        select(func.count()).select_from(PersonalizedRoadmap)
+        .where(PersonalizedRoadmap.learner_id == learner.id)
+    ) or 0
+    total_roadmaps_applied = await session.scalar(
+        select(func.count()).select_from(PersonalizedRoadmap)
+        .where(PersonalizedRoadmap.learner_id == learner.id, PersonalizedRoadmap.applied_at.is_not(None))
+    ) or 0
+    total_phases_passed = await session.scalar(
+        select(func.count()).select_from(PhaseAssessment)
+        .join(PersonalizedRoadmap, PhaseAssessment.roadmap_id == PersonalizedRoadmap.id)
+        .where(PersonalizedRoadmap.learner_id == learner.id, PhaseAssessment.status == "passed")
+    ) or 0
+
+    return LearnerStatsResponse(
+        total_documents=total_documents,
+        total_subjects=len(subjects),
+        total_exams=total_exams,
+        total_roadmaps=total_roadmaps,
+        total_roadmaps_applied=total_roadmaps_applied,
+        total_phases_passed=total_phases_passed,
+    )
 
 
 @router.get("/subjects/{subject}/analyses", response_model=list[ExamAnalysisSummary])
@@ -1255,7 +1520,7 @@ async def list_analyses_by_subject(
         select(ExamAnalysis)
         .where(
             ExamAnalysis.learner_id == learner.id,
-            ExamAnalysis.subject == subject,
+            func.lower(ExamAnalysis.subject) == subject.strip().lower(),
         )
         .order_by(ExamAnalysis.created_at.desc())
         .limit(limit)
@@ -1312,7 +1577,7 @@ async def delete_subject(
     result = await session.execute(
         select(ExamAnalysis).where(
             ExamAnalysis.learner_id == learner.id,
-            ExamAnalysis.subject == subject,
+            func.lower(ExamAnalysis.subject) == subject.strip().lower(),
         )
     )
     analyses = list(result.scalars().all())
@@ -1418,6 +1683,16 @@ async def get_exam_analysis(
     roadmap = ai_rec.get("_roadmap", {})
     solution_results = ai_rec.get("_solution_results", [])
 
+    roadmap_id: str | None = None
+    if roadmap:
+        roadmap_result = await session.execute(
+            select(PersonalizedRoadmap.id).where(
+                PersonalizedRoadmap.exam_analysis_id == analysis.id,
+            ).limit(1)
+        )
+        roadmap_row = roadmap_result.scalar_one_or_none()
+        roadmap_id = str(roadmap_row) if roadmap_row else None
+
     return ExamAnalysisDetail(
         id=str(analysis.id),
         filename=analysis.filename,
@@ -1434,6 +1709,7 @@ async def get_exam_analysis(
         resources=analysis.resources_json,
         mastery_updates=analysis.mastery_updates_json,
         roadmap=roadmap,
+        roadmap_id=roadmap_id,
         phase_resources={},
         solution_results=solution_results,
         created_at=analysis.created_at,

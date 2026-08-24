@@ -26,6 +26,8 @@ async def lifespan(
     print("Stopping application")
 
 
+_is_dev = settings.environment == "development"
+
 app = FastAPI(
     title=settings.project_name,
     version="0.1.0",
@@ -37,6 +39,11 @@ app = FastAPI(
     swagger_ui_parameters={
         "persistAuthorization": True,
     },
+    # Swagger UI/ReDoc/OpenAPI schema làm lộ toàn bộ bề mặt API cho bất kỳ ai truy cập được —
+    # chỉ bật ở môi trường development, tắt hẳn khi ENVIRONMENT != "development".
+    docs_url="/docs" if _is_dev else None,
+    redoc_url="/redoc" if _is_dev else None,
+    openapi_url="/openapi.json" if _is_dev else None,
 )
 
 app.add_middleware(

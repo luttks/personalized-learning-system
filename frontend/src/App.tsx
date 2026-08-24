@@ -4,11 +4,11 @@ import { GuestOnly, RequireAuth, RequireRole } from "./auth/RouteGuards";
 import { AppShell } from "./components/AppShell";
 import { LoginPage, RegisterPage } from "./pages/AuthPages";
 import { DashboardPage } from "./pages/DashboardPage";
-import { CourseManagementPage } from "./pages/CourseManagementPage";
 import { PersonalizedLearningPage } from "./pages/PersonalizedLearningPage";
 import { RoadmapPage } from "./pages/RoadmapPage";
 import { StudentProfilePage } from "./pages/StudentProfilePage";
 import { UsersPage } from "./pages/UsersPage";
+import { AdminSubjectsPage } from "./pages/AdminSubjectsPage";
 
 export default function App() {
   return (
@@ -31,10 +31,7 @@ export default function App() {
 
           <Route element={<RequireRole allowed={["admin"]} />}>
             <Route path="users" element={<UsersPage />} />
-          </Route>
-
-          <Route element={<RequireRole allowed={["student", "admin"]} />}>
-            <Route path="courses" element={<CourseManagementPage />} />
+            <Route path="admin/subjects" element={<AdminSubjectsPage />} />
           </Route>
         </Route>
       </Route>

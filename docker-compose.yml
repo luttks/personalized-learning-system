@@ -45,6 +45,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
     ports:
       - "${BACKEND_PORT}:8000"
     volumes:
@@ -70,6 +72,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
     volumes:
       - ./backend:/app
       - ./uploads:/app/uploads
@@ -82,6 +86,31 @@ services:
       celery
       -A app.worker.celery_app:celery_app
       worker
+      --loglevel=INFO
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: learning-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Chỉ chạy ĐÚNG 1 instance — chạy 2 sẽ khiến beat_schedule bắn 2 lần, gửi trùng email nhắc
+    # học mỗi ngày.
+    command: >
+      celery
+      -A app.worker.celery_app:celery_app
+      beat
       --loglevel=INFO
 
   frontend:

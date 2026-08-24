@@ -1,10 +1,17 @@
+import logging
+import os
+import shutil
+
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
+from app.core.config import settings
 from app.core.security import hash_password
 from app.models.user import User
 from app.schemas.user import UserCreate, UserUpdate
+
+logger = logging.getLogger(__name__)
 
 
 class EmailAlreadyExistsError(Exception):
@@ -108,3 +115,8 @@ async def delete_user(
 
     await session.delete(user)
     await session.commit()
+
+    # uploads/{user_id}/ chứa toàn bộ tài liệu đã upload của người dùng này (đề thi, tài liệu
+    # onboarding...) — xóa cả thư mục để uploads/ không còn giữ file mồ côi sau khi xóa tài khoản.
+    user_uploads_dir = os.path.join(settings.uploads_dir, str(user_id))
+    shutil.rmtree(user_uploads_dir, ignore_errors=True)

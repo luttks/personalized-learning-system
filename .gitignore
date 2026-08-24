@@ -43,6 +43,9 @@ docs/
 *.sqlite
 *.sqlite3
 
+# Celery Beat runtime schedule (SQLite, machine-local state)
+celerybeat-schedule*
+
 # Frontend extras
 build/
 .eslintcache

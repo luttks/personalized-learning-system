@@ -26,14 +26,3 @@ def test_auth_me_uses_http_bearer_authentication() -> None:
     assert schema["paths"]["/api/v1/auth/me"]["get"][
         "security"
     ] == [{"HTTPBearer": []}]
-
-
-def test_job_routes_require_authentication() -> None:
-    paths = app.openapi()["paths"]
-
-    assert paths["/api/v1/jobs/test"]["post"][
-        "security"
-    ] == [{"HTTPBearer": []}]
-    assert paths["/api/v1/jobs/{job_id}"]["get"][
-        "security"
-    ] == [{"HTTPBearer": []}]

@@ -12,7 +12,7 @@ import {
   getStoredTokens,
   storeTokens,
 } from "../api/client";
-import type { LoginPayload } from "../types/auth";
+import type { LoginPayload, TokenResponse } from "../types/auth";
 import type { User } from "../types/user";
 import { AuthContext } from "./useAuth";
 
@@ -45,8 +45,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("auth:expired", handleExpired);
   }, [refreshUser]);
 
-  const signIn = useCallback(async (payload: LoginPayload) => {
-    const response = await authApi.login(payload);
+  const applySession = useCallback((response: TokenResponse) => {
     storeTokens({
       accessToken: response.access_token,
       refreshToken: response.refresh_token,
@@ -54,6 +53,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(response.user);
     return response.user;
   }, []);
+
+  const signIn = useCallback(
+    async (payload: LoginPayload) => applySession(await authApi.login(payload)),
+    [applySession],
+  );
 
   const signOut = useCallback(async (allDevices = false) => {
     const refreshToken = getStoredTokens()?.refreshToken;
@@ -67,8 +71,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, isBootstrapping, signIn, signOut, refreshUser }),
-    [user, isBootstrapping, signIn, signOut, refreshUser],
+    () => ({ user, isBootstrapping, signIn, applySession, signOut, refreshUser }),
+    [user, isBootstrapping, signIn, applySession, signOut, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -35,20 +35,46 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     gemini_api_key2: str | None = None
     gemini_api_key3: str | None = None
+    # Model embedding cho RAG (chấm ngữ cảnh tài liệu gốc vào prompt sinh câu hỏi kiểm tra) —
+    # xem app/core/llm_client.py: LLMClient.embed_texts, app/services/exam_service.py: chunk_document_text.
+    gemini_embedding_model: str = "gemini-embedding-001"
     youtube_api_key: str | None = None
     github_token: str | None = None
 
+    # SMTP — gửi email OTP xác thực tài khoản khi đăng ký. Nếu để trống smtp_host, hệ thống
+    # không gửi email thật mà chỉ ghi mã OTP ra log (phù hợp môi trường dev chưa có SMTP thật).
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "Personalized Learning System"
+    smtp_use_tls: bool = True
+    otp_expire_minutes: int = 10
+    otp_max_attempts: int = 5
+
+    # Bài kiểm tra năng lực cuối giai đoạn — chặn/mở khóa giai đoạn tiếp theo của lộ trình
+    phase_assessment_pass_threshold: float = Field(default=0.7, ge=0, le=1)
+    phase_assessment_num_questions: int = Field(default=10, ge=3, le=15)
+    phase_assessment_submit_rate_limit_max: int = 5
+    phase_assessment_submit_rate_limit_window_seconds: int = 600
+
+    # Bài thi chốt hạ cuối lộ trình — báo cáo, không phải cửa chặn nên không có ngưỡng đậu.
+    final_exam_num_questions: int = Field(default=20, ge=5, le=30)
+    final_exam_submit_rate_limit_max: int = 3
+    final_exam_submit_rate_limit_window_seconds: int = 600
+
+    # Giờ gửi email nhắc học hằng ngày (theo timezone Asia/Ho_Chi_Minh của Celery Beat)
+    daily_reminder_email_hour: int = 7
+    daily_reminder_email_minute: int = 0
+
+    # Giờ gửi email nhắc nhở BUỔI 2 riêng cho người học đang bị khóa giai đoạn (locked_for_retry) —
+    # độc lập với daily_reminder_email_hour/_minute (buổi sáng, gửi cho MỌI người có lịch học hôm
+    # nay), không đụng tới digest bình thường.
+    stuck_reminder_email_hour: int = 19
+    stuck_reminder_email_minute: int = 0
+
     uploads_dir: str = "uploads"
-    document_max_upload_bytes: int = Field(default=150 * 1024 * 1024, gt=0)
-    document_upload_chunk_bytes: int = Field(default=1024 * 1024, gt=0)
-    document_analysis_input_chars: int = Field(default=120_000, gt=1000)
-    document_analysis_output_chars: int = Field(default=200_000, gt=1000)
-    document_ocr_enabled: bool = True
-    document_ocr_languages: str = "vie+eng"
-    document_ocr_dpi: int = Field(default=200, ge=72, le=300)
-    document_ocr_max_pages: int = Field(default=400, ge=1, le=2000)
-    document_ocr_min_text_chars: int = Field(default=40, ge=0, le=5000)
-    document_ocr_min_confidence: int = Field(default=35, ge=0, le=100)
 
     model_config = SettingsConfigDict(
         env_file=".env",

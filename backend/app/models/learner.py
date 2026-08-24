@@ -10,7 +10,6 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
-    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -122,45 +121,3 @@ class MasteryHistory(Base, UUIDPrimaryKeyMixin):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-
-
-class Roadmap(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    __tablename__ = "roadmaps"
-
-    learner_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("learner_profiles.id", ondelete="CASCADE"),
-        index=True,
-        nullable=False,
-    )
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    subject: Mapped[str] = mapped_column(String(150), nullable=False)
-    status: Mapped[str] = mapped_column(String(30), default="active", nullable=False)
-    deadline: Mapped[date | None] = mapped_column(Date)
-    total_estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
-    profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    context_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-
-
-class RoadmapItem(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    __tablename__ = "roadmap_items"
-    __table_args__ = (
-        UniqueConstraint(
-            "roadmap_id", "sequence", name="uq_roadmap_items_sequence"
-        ),
-    )
-
-    roadmap_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True),
-        ForeignKey("roadmaps.id", ondelete="CASCADE"),
-        index=True,
-        nullable=False,
-    )
-    concept_id: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
-    session_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    planned_date: Mapped[date] = mapped_column(Date, nullable=False)
-    estimated_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
-    activity_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
