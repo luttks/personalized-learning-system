@@ -1,5 +1,8 @@
 import { Loader2, MessageCircle, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 
 import { getApiErrorMessage } from "../api/client";
 import {
@@ -114,13 +117,15 @@ export function DocumentChatWidget({
               ) : (
                 <div key={i} className={`flex ${b.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div
-                    className={`max-w-[85%] rounded-xl px-3 py-2 text-sm ${
+                    className={`max-w-[85%] rounded-xl px-3 py-2 text-sm [&_p]:m-0 [&_p:not(:last-child)]:mb-2 ${
                       b.role === "user"
                         ? "bg-indigo-600 text-white"
                         : "bg-slate-100 text-slate-800"
                     }`}
                   >
-                    {b.content}
+                    <Markdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>
+                      {b.content}
+                    </Markdown>
                   </div>
                 </div>
               )
