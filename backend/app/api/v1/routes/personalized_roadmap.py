@@ -3,19 +3,23 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies.auth import get_current_student
 from app.api.dependencies.rate_limit import rate_limit_by_user
 from app.core.config import settings
+from app.core.redis_client import get_redis_client
 from app.db.session import get_db_session
+from app.models.exam_analysis_chunk import ExamAnalysisChunk
 from app.models.exam_analysis_model import ExamAnalysis
 from app.models.personalized_roadmap import PersonalizedRoadmap
 from app.models.phase_assessment import PhaseAssessment
 from app.models.roadmap_final_exam import RoadmapFinalExam
 from app.models.user import User
+from app.services.exam_analysis_chunk_service import retrieve_relevant_chunks_for_question
+from app.services.exam_service import answer_document_chat_question
 from app.services.learner_service import get_learner_profile
 from app.services.phase_assessment_service import (
     can_access_phase,
@@ -30,6 +34,7 @@ from app.worker.tasks import (
     apply_phase_remediation_task,
     generate_final_exam_task,
     generate_phase_assessment_task,
+    index_exam_analysis_chunks_task,
 )
 
 router = APIRouter()
@@ -129,6 +134,22 @@ class SubmitFinalExamResponse(BaseModel):
     phase_recap: list[PhaseRecapItem] = []
 
 
+class DocumentChatMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str = Field(max_length=2000)
+
+
+class DocumentChatRequest(BaseModel):
+    question: str = Field(max_length=1000)
+    history: list[DocumentChatMessage] = []
+
+
+class DocumentChatResponse(BaseModel):
+    status: str  # "answered" | "indexing" | "no_document"
+    answer: str | None = None
+    message: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -211,6 +232,21 @@ def _public_final_exam_questions(exam: RoadmapFinalExam) -> list[dict]:
         }
         for q in exam.questions_json or []
     ]
+
+
+async def _trigger_chunk_indexing_once(exam_analysis_id: UUID) -> None:
+    """Bắn task đánh chỉ mục RAG (self-heal cho tài liệu chưa từng được chunk/embed — VD lộ trình
+    tạo trước khi tính năng RAG tồn tại) — khóa Redis NX+EX 180s để KHÔNG bắn trùng nếu người học
+    gửi liên tiếp vài tin nhắn chat trong lúc tài liệu (có thể hàng trăm đoạn) đang được đánh chỉ
+    mục — việc này tốn thật hạn mức embedding, không rẻ như enqueue lại 1 bài kiểm tra."""
+    try:
+        acquired = await get_redis_client().set(
+            f"doc_chat_indexing:{exam_analysis_id}", "1", nx=True, ex=180
+        )
+    except Exception:
+        acquired = True  # Redis lỗi tạm thời — thà trùng còn hơn không đánh chỉ mục
+    if acquired:
+        index_exam_analysis_chunks_task.delay(str(exam_analysis_id))
 
 
 def _reopen_if_due(assessment: PhaseAssessment) -> bool:
@@ -638,4 +674,79 @@ async def submit_final_exam(
         score_ratio=result["score_ratio"],
         results=result["results"],
         phase_recap=phase_recap,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chatbot hỏi-đáp tài liệu gốc (RAG) — xuất hiện ở góc màn hình xem lộ trình
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/{roadmap_id}/document-chat",
+    response_model=DocumentChatResponse,
+    dependencies=[
+        Depends(
+            rate_limit_by_user(
+                "document_chat",
+                max_requests=settings.document_chat_rate_limit_max,
+                window_seconds=settings.document_chat_rate_limit_window_seconds,
+            )
+        )
+    ],
+)
+async def document_chat(
+    roadmap_id: UUID,
+    payload: DocumentChatRequest,
+    session: DatabaseSession,
+    current_user: CurrentStudent,
+) -> Any:
+    """Hỏi-đáp tự do về tài liệu gốc đã dùng để tạo lộ trình — trả lời bằng RAG (truy hồi đoạn
+    trích liên quan qua exam_analysis_chunk_service rồi chấm vào prompt), KHÔNG bịa ngoài tài liệu.
+    Tự đánh chỉ mục (self-heal) nếu tài liệu chưa từng được chunk/embed (VD lộ trình tạo trước khi
+    tính năng RAG tồn tại)."""
+    roadmap = await _get_owned_roadmap(session, current_user, roadmap_id)
+    question = payload.question.strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="Câu hỏi không được để trống.")
+
+    if not roadmap.exam_analysis_id:
+        return DocumentChatResponse(
+            status="no_document", message="Lộ trình này không có tài liệu gốc để hỏi đáp."
+        )
+
+    analysis = await session.get(ExamAnalysis, roadmap.exam_analysis_id)
+    if analysis is None or not analysis.raw_markdown or not analysis.raw_markdown.strip():
+        return DocumentChatResponse(
+            status="no_document", message="Không tìm thấy nội dung tài liệu gốc."
+        )
+
+    has_chunks = await session.scalar(
+        select(ExamAnalysisChunk.id)
+        .where(ExamAnalysisChunk.exam_analysis_id == roadmap.exam_analysis_id)
+        .limit(1)
+    )
+    if has_chunks is None:
+        await _trigger_chunk_indexing_once(roadmap.exam_analysis_id)
+        return DocumentChatResponse(
+            status="indexing",
+            message="Tài liệu đang được xử lý để phục vụ hỏi đáp, vui lòng thử lại sau khoảng 1-2 phút.",
+        )
+
+    context_chunks = await retrieve_relevant_chunks_for_question(
+        session, roadmap.exam_analysis_id, question, top_k=5
+    )
+    history = [{"role": m.role, "content": m.content} for m in payload.history[-6:]]
+    result = await answer_document_chat_question(
+        question=question,
+        subject=roadmap.title,
+        context_chunks=context_chunks,
+        history=history,
+        gemini_api_keys=settings.gemini_api_keys,
+        llm_api_keys=settings.llm_api_keys,
+        llm_base_url=settings.llm_base_url,
+        llm_model=settings.llm_model or "",
+    )
+    return DocumentChatResponse(
+        status="answered",
+        answer=result.get("answer") or "Xin lỗi, tôi chưa thể trả lời câu hỏi này.",
     )

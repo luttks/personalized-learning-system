@@ -73,6 +73,7 @@ import { getStudentProfile } from "../api/student";
 import { Button } from "../components/ui";
 import { PhaseAssessmentModal } from "../components/PhaseAssessmentModal";
 import { FinalExamModal } from "../components/FinalExamModal";
+import { DocumentChatWidget } from "../components/DocumentChatWidget";
 
 // 4 mức độ học tập — khớp 1:1 với STUDY_DEPTH_MODE_LABELS ở backend (exam_service.py). Trùng lặp
 // nội dung có chủ đích vì Python/TS không chia sẻ được code — nếu đổi nhãn/mô tả, sửa cả 2 nơi.
@@ -1012,6 +1013,10 @@ export function RoadmapInlinePanel({
 
       {roadmapId && showFinalExam && (
         <FinalExamModal roadmapId={roadmapId} onClose={() => setShowFinalExam(false)} />
+      )}
+
+      {roadmapId && analysisId && (
+        <DocumentChatWidget roadmapId={roadmapId} subject={subject} />
       )}
     </div>
   );

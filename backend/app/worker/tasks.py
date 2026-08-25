@@ -157,19 +157,24 @@ def generate_phase_assessment_task(self: Any, phase_assessment_id: str) -> dict:
             raise
 
 
-async def _index_exam_analysis_chunks_async(session: AsyncSession, exam_analysis_id: str) -> dict:
+async def _index_exam_analysis_chunks_async(
+    session: AsyncSession, exam_analysis_id: str, topics: list[str] | None = None
+) -> dict:
     from sqlalchemy import delete
 
     from app.models.exam_analysis_chunk import ExamAnalysisChunk
     from app.models.exam_analysis_model import ExamAnalysis
-    from app.services.exam_service import chunk_document_text
+    from app.services.exam_service import chunk_document_text_by_topics
     from app.core.llm_client import get_llm_client
 
     analysis = await session.get(ExamAnalysis, UUID(exam_analysis_id))
     if analysis is None or not analysis.raw_markdown or not analysis.raw_markdown.strip():
         return {"status": "skipped", "reason": "no raw_markdown"}
 
-    chunks = chunk_document_text(analysis.raw_markdown)
+    # topics (mục lục tài liệu, nếu có — truyền từ routes/exam.py lúc phân tích tài liệu) chia
+    # chunk theo ĐÚNG ranh giới chủ đề thay vì mù theo số ký tự, giảm hẳn số chunk cần embed. Rỗng
+    # (self-heal cho tài liệu cũ, hoặc luồng post_exam) thì hàm tự rơi về chia theo ký tự.
+    chunks = chunk_document_text_by_topics(analysis.raw_markdown, topics or [])
     if not chunks:
         return {"status": "skipped", "reason": "chunking produced 0 chunks"}
 
@@ -189,14 +194,20 @@ async def _index_exam_analysis_chunks_async(session: AsyncSession, exam_analysis
 
 
 @celery_app.task(bind=True, name="exam_analysis.index_chunks", max_retries=3, default_retry_delay=30)
-def index_exam_analysis_chunks_task(self: Any, exam_analysis_id: str) -> dict:
+def index_exam_analysis_chunks_task(
+    self: Any, exam_analysis_id: str, topics: list[str] | None = None
+) -> dict:
     """Chunk + embed + lưu ExamAnalysisChunk (RAG) — chạy NGẦM ngay sau khi ExamAnalysis được
     commit (routes/exam.py: submit_exam), KHÔNG chặn request. Best-effort: nếu thất bại hoàn toàn
     sau hết lượt retry, sinh câu hỏi kiểm tra sau đó tự động rơi về KHÔNG có ngữ cảnh tài liệu gốc
     như trước khi có RAG (xem exam_analysis_chunk_service.retrieve_relevant_chunks_for_topics) —
-    không cần cơ chế 'gỡ kẹt' riêng như tính năng khóa giai đoạn."""
+    không cần cơ chế 'gỡ kẹt' riêng như tính năng khóa giai đoạn. `topics`: mục lục tài liệu đã LLM
+    xác định (nếu có) — dùng để chia chunk theo đúng ranh giới chủ đề, xem
+    exam_service.chunk_document_text_by_topics."""
     try:
-        return asyncio.run(_run_with_fresh_session(_index_exam_analysis_chunks_async, exam_analysis_id))
+        return asyncio.run(
+            _run_with_fresh_session(_index_exam_analysis_chunks_async, exam_analysis_id, topics)
+        )
     except Exception as exc:
         logger.warning(f"index_exam_analysis_chunks_task lỗi cho {exam_analysis_id}: {exc}")
         try:

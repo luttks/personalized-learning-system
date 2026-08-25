@@ -11,15 +11,17 @@ EMBEDDING_DIMENSIONS = 768
 
 
 class ExamAnalysisChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
-    """Đoạn trích raw_markdown của ExamAnalysis đã đánh chỉ mục embedding — phục vụ RAG chấm ngữ
-    cảnh tài liệu gốc vào prompt sinh câu hỏi kiểm tra (generate_phase_assessment_quiz/
-    generate_final_exam_quiz trong exam_service.py), KHÔNG phải chatbot hỏi-đáp tài liệu. Sinh
-    ngầm qua index_exam_analysis_chunks_task (app/worker/tasks.py) ngay sau khi ExamAnalysis được
-    commit. KHÁC document_page_chunks (RAG cũ cho tính năng nhảy trang, đã xóa vì 1 Gemini API key
-    bị giới hạn hạn mức quá thấp — xem alembic e6b7583a9dcb) — bảng này dùng cơ chế xoay vòng 3 key
-    đã có sẵn trong LLMClient nên rủi ro hạn mức thấp hơn hẳn. Không có cột trạng thái kiểu
+    """Đoạn trích raw_markdown của ExamAnalysis đã đánh chỉ mục embedding — phục vụ RAG cho 2 use
+    case: (1) chấm ngữ cảnh tài liệu gốc vào prompt sinh câu hỏi kiểm tra
+    (generate_phase_assessment_quiz/generate_final_exam_quiz trong exam_service.py), (2) chatbot
+    hỏi-đáp tài liệu tự do (route document_chat trong routes/personalized_roadmap.py, qua
+    exam_analysis_chunk_service.retrieve_relevant_chunks_for_question). Sinh ngầm qua
+    index_exam_analysis_chunks_task (app/worker/tasks.py) ngay sau khi ExamAnalysis được commit.
+    KHÁC document_page_chunks (RAG cũ cho tính năng nhảy trang, đã xóa vì 1 Gemini API key bị giới
+    hạn hạn mức quá thấp — xem alembic e6b7583a9dcb) — bảng này dùng cơ chế xoay vòng 3 key đã có
+    sẵn trong LLMClient nên rủi ro hạn mức thấp hơn hẳn. Không có cột trạng thái kiểu
     'page_index_status' — việc "chưa đánh chỉ mục xong" được xử lý tự nhiên bằng cách truy hồi trả
-    về rỗng khi chưa có dòng nào, sinh đề vẫn chạy bình thường không có ngữ cảnh gốc."""
+    về rỗng khi chưa có dòng nào, sinh đề/chatbot vẫn chạy bình thường không có ngữ cảnh gốc."""
 
     __tablename__ = "exam_analysis_chunks"
     __table_args__ = (

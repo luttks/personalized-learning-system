@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     final_exam_submit_rate_limit_max: int = 3
     final_exam_submit_rate_limit_window_seconds: int = 600
 
+    # Chatbot hỏi-đáp tài liệu gốc (RAG) — cửa sổ rộng hơn hẳn phase/final-exam submit vì đây là
+    # hội thoại nhiều lượt, không phải hành động 1 lần/cửa chặn.
+    document_chat_rate_limit_max: int = 20
+    document_chat_rate_limit_window_seconds: int = 600
+
     # Giờ gửi email nhắc học hằng ngày (theo timezone Asia/Ho_Chi_Minh của Celery Beat)
     daily_reminder_email_hour: int = 7
     daily_reminder_email_minute: int = 0

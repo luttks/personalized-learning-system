@@ -1340,7 +1340,11 @@ async def submit_exam(
     await session.refresh(analysis)
 
     if analysis.raw_markdown and analysis.raw_markdown.strip():
-        index_exam_analysis_chunks_task.delay(str(analysis.id))
+        # topics_parsed = mục lục tài liệu đã LLM xác định (luồng onboarding) — truyền để đánh chỉ
+        # mục CHIA THEO ĐÚNG RANH GIỚI CHỦ ĐỀ thay vì chia mù theo số ký tự, giảm hẳn số chunk (và
+        # do đó giảm số lượt gọi embedding). Rỗng ở luồng post_exam (topics_parsed không áp dụng ở
+        # đó) — index_exam_analysis_chunks_task tự rơi về chia theo ký tự khi không có mục lục.
+        index_exam_analysis_chunks_task.delay(str(analysis.id), topics_parsed)
 
     # Save Roadmap to new table if generated
     roadmap_id: str | None = None
